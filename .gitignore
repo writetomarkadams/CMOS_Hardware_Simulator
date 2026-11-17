@@ -1,0 +1,22 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Xcode user-specific files
+xcuserdata/
+*.xcuserstate
+*.xcuserdatad/
+
+# Xcode build files
+build/
+DerivedData/
+*.xcresult
+
+# Swift Package Manager
+.swiftpm/
+.build/
+
+# Temporary files
+*.swp
+*~
