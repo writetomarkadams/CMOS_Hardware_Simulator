@@ -35,6 +35,8 @@ final class SimulationEngine {
 
     private(set) var components: [any LogicComponent] = []
     private(set) var nets: [Net] = []
+    var automaticallyPowerChips = false
+    private var unpoweredChips: Set<ObjectIdentifier> = []
     private var drivenPins: [Pin] = []
     private var previousStates: [LogicState] = []
 
@@ -66,7 +68,15 @@ final class SimulationEngine {
                 previousStates[index] = drivenPins[index].driveState
             }
             for component in components {
-                component.evaluate()
+                if let chip = component as? any PoweredChip, !automaticallyPowerChips, chip.powerState != .powered {
+                    if unpoweredChips.insert(ObjectIdentifier(chip)).inserted {
+                        chip.powerDidFail()
+                    }
+                    chip.disableOutputs()
+                } else {
+                    unpoweredChips.remove(ObjectIdentifier(component))
+                    component.evaluate()
+                }
             }
 
             var changed = false

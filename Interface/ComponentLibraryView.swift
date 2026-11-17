@@ -14,6 +14,7 @@ struct ComponentLibraryView: View {
 
     private enum Entry: Hashable, Identifiable {
         case chip(MultiUnitChip)
+        case chipPower(MultiUnitChip, Int)
         case displayDriver(SevenSegmentDriverKind)
         case sevenSegmentDisplay
         case power(PowerRail)
@@ -24,6 +25,7 @@ struct ComponentLibraryView: View {
         var name: String {
             switch self {
             case .chip(let kind): kind.partName
+            case .chipPower(let kind, let package): "\(kind.partName) U\(package)\(kind.powerUnit.letter)"
             case .counter: "CD4510"
             case .displayDriver(let kind): kind.rawValue
             case .sevenSegmentDisplay: "MAN74A"
@@ -43,6 +45,7 @@ struct ComponentLibraryView: View {
         var detail: String {
             switch self {
             case .chip(let kind): kind.unitName
+            case .chipPower: "Shared Power Unit · VDD / VSS"
             case .counter: "BCD Up/Down Counter"
             case .displayDriver: "BCD to Seven-Segment Latch and Driver"
             case .sevenSegmentDisplay: "Single Digit LED Display · Common Cathode"
@@ -62,7 +65,7 @@ struct ComponentLibraryView: View {
 
         var icon: String {
             switch self {
-            case .chip, .counter, .rippleCounter, .displayDriver: "cpu"
+            case .chip, .chipPower, .counter, .rippleCounter, .displayDriver: "cpu"
             case .transistor: "circle.branch"
             case .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
             case .pullUp, .power(.fiveVolts): "arrow.up"
@@ -85,7 +88,12 @@ struct ComponentLibraryView: View {
 
     private var chips: [Entry] {
         (MultiUnitChip.allCases.map(Entry.chip) + [.counter, .rippleCounter]
-            + SevenSegmentDriverKind.allCases.map(Entry.displayDriver))
+            + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
+            + MultiUnitChip.allCases.flatMap { kind in
+                bench.packages(for: kind).filter {
+                    bench.availableUnits(in: $0, kind: kind).contains(kind.powerUnit)
+                }.map { Entry.chipPower(kind, $0) }
+            })
             .sorted { $0.name < $1.name }
             .filter { $0.matches(search) }
     }
@@ -179,6 +187,8 @@ struct ComponentLibraryView: View {
         switch selection {
         case .chip(let kind):
             bench.addNextUnit(for: kind)
+        case .chipPower(let kind, let package):
+            bench.addUnit(kind.powerUnit, kind: kind, to: package)
         case .counter:
             bench.add("CD4510", component: CD4510())
         case .rippleCounter:

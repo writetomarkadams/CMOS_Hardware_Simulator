@@ -74,6 +74,13 @@ struct WorkbenchView: View {
                     .keyboardShortcut("z", modifiers: [.command, .shift])
                     .disabled(!bench.canRedo || showingLibrary || editingResistance != nil)
 
+                Picker("Power", selection: Binding(
+                    get: { bench.powerMode }, set: { bench.setPowerMode($0) }
+                )) {
+                    ForEach(PowerMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .fixedSize()
+                .help("Automatic assumes a 5 V supply. Explicit requires wired supply rails.")
                 Spacer()
                 Button("Open…", systemImage: "folder") { openingFile = true }
                     .labelStyle(.iconOnly)
@@ -574,6 +581,14 @@ struct WorkbenchView: View {
                     let terminal = WorkbenchTerminal(partID: part.id, pinNumber: pin.number)
                     pinRow(pin, terminal: terminal)
                 }
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if let warning = bench.powerStates[part.id]?.warning {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help(warning + " — connect VDD to +5V and VSS to GND.")
+                    .accessibilityLabel(warning)
             }
         }
         .padding(4)

@@ -103,6 +103,7 @@ struct SimulationEngineTests {
         let engine = SimulationEngine()
         let chip = CD4081()
 
+        connectTestPower(chip, to: engine)
         engine.addComponent(chip)
 
         let sourceA = Pin(number: 1, name: "A", direction: .output)
@@ -449,6 +450,7 @@ struct CD4510Tests {
         directionNet.connect(direction)
 
         for chip in onesFirst ? [ones, tens] : [tens, ones] {
+            connectTestPower(chip, to: engine)
             engine.addComponent(chip)
             chip.pins[1]?.receive(.low) // Preset disabled
             chip.pins[9]?.receive(.low) // Reset inactive
@@ -598,9 +600,11 @@ struct WorkbenchTests {
     @Test("Workbench wires share a net and removing a wire disconnects its pin")
     func wireAndDisconnectGate() throws {
         let bench = Workbench()
+        bench.setPowerMode(.explicit)
         let source = WorkbenchSwitch()
         bench.add("Switch", component: source)
         bench.add("CD4081", component: CD4081())
+        connectTestPower(partID: 2, on: bench)
 
         let sourcePin = WorkbenchTerminal(partID: 1, pinNumber: 1)
         let inputA = WorkbenchTerminal(partID: 2, pinNumber: 1)
@@ -610,9 +614,9 @@ struct WorkbenchTests {
         let bend = CGPoint(x: 100, y: 50)
         bench.select(sourcePin)
         bench.addBend(at: bend)
-        #expect(bench.wires.isEmpty)
+        #expect(bench.wires.count == 2)
         bench.select(inputA)
-        #expect(bench.wires.first?.bends == [bend])
+        #expect(bench.wires.last?.bends == [bend])
         #expect(bench.pendingBends.isEmpty)
         bench.select(inputA)
         bench.select(inputB)
@@ -634,7 +638,7 @@ struct WorkbenchTests {
         bench.select(inputA)
         bench.addBend(at: bend)
         bench.removePart(inputA.partID)
-        #expect(bench.parts.map(\.id) == [sourcePin.partID])
+        #expect(bench.parts.map(\.id) == [sourcePin.partID, 3, 4])
         #expect(bench.wires.isEmpty)
         #expect(bench.selectedTerminal == nil)
         #expect(bench.pendingBends.isEmpty)
@@ -713,7 +717,7 @@ extension WorkbenchTests {
         #expect(bench.parts[2].pins.keys.sorted() == [11, 12, 13])
 
         bench.removePart(first.id)
-        #expect(bench.availableUnits(in: package, kind: kind).map(\.letter) == ["A", "C", "D"])
+        #expect(bench.availableUnits(in: package, kind: kind).map(\.letter) == ["A", "C", "D", "E"])
         #expect(bench.parts.first?.component === second.component)
     }
 }
@@ -1013,6 +1017,7 @@ struct SevenSegmentTests {
             let driver = SevenSegmentDriver(is4511 ? .cd4511 : .cd4543)
             let display = MAN74A()
             let engine = SimulationEngine()
+            connectTestPower(driver, to: engine)
             engine.addComponent(driver)
             engine.addComponent(display)
 
@@ -1148,5 +1153,337 @@ extension WorkbenchTests {
         #expect(reopened.positions[3] == point)
         #expect(reopened.rotations[3] == 1)
         #expect(reopened.ledColours[3] == .blue)
+    }
+}
+
+
+private func connectTestPower(_ component: any LogicComponent, to engine: SimulationEngine) {
+    guard let chip = component as? any PoweredChip else { return }
+    for (rail, number) in [(PowerRail.fiveVolts, chip.supplyPins.vdd), (.ground, chip.supplyPins.vss)] {
+        let supply = WorkbenchPower(rail)
+        let net = Net(name: rail.rawValue)
+        engine.addComponent(supply)
+        net.connect(supply.pins[1]!)
+        net.connect(component.pins[number]!)
+        engine.addNet(net)
+    }
+}
+
+private func connectTestPower(partID: Int, on bench: Workbench) {
+    guard let part = bench.parts.first(where: { $0.id == partID }),
+          let chip = part.component as? any PoweredChip else { return }
+    for (rail, number) in [(PowerRail.fiveVolts, chip.supplyPins.vdd), (.ground, chip.supplyPins.vss)] {
+        bench.add(rail.rawValue, component: WorkbenchPower(rail))
+        let supplyID = bench.parts.last!.id
+        bench.select(WorkbenchTerminal(partID: supplyID, pinNumber: 1))
+        bench.select(WorkbenchTerminal(partID: partID, pinNumber: number))
+    }
+}
+
+struct ChipPowerTests {
+    @Test("Every CMOS chip drives X until both actual supply rails are connected")
+    func supplyValidation() {
+        let chips: [any PoweredChip] = [
+            CD4081(), CD4011(), CD40106(), CD4027(), CD4060(), CD4510(),
+            SevenSegmentDriver(.cd4511), SevenSegmentDriver(.cd4543)
+        ]
+        for chip in chips {
+            let engine = SimulationEngine()
+            engine.addComponent(chip)
+            #expect(engine.settle())
+            #expect(chip.powerState == .disconnected)
+            #expect(chip.pins.values.filter { $0.direction == .output }.allSatisfy { $0.driveState == .undefined })
+            connectTestPower(chip, to: engine)
+            #expect(engine.settle())
+            #expect(chip.powerState == .powered)
+        }
+    }
+
+    @Test("Logic HIGH and LOW cannot substitute for supply rails, and disconnection makes a driven output unknown")
+    func railsAreDistinct() {
+        let bench = Workbench()
+        bench.setPowerMode(.explicit)
+        let chip = CD4081()
+        bench.add("Chip", component: chip)
+        bench.add("Logic High", component: WorkbenchSwitch())
+        let logic = bench.parts[1].component as! WorkbenchSwitch
+        bench.toggle(logic)
+        bench.add("Ground", component: WorkbenchPower(.ground))
+        bench.select(WorkbenchTerminal(partID: 2, pinNumber: 1))
+        bench.select(WorkbenchTerminal(partID: 1, pinNumber: 14))
+        bench.select(WorkbenchTerminal(partID: 3, pinNumber: 1))
+        bench.select(WorkbenchTerminal(partID: 1, pinNumber: 7))
+        #expect(chip.powerState == .incorrect)
+        #expect(chip.pins[3]!.driveState == .undefined)
+        bench.removeWire(1)
+        #expect(chip.powerState == .disconnected)
+        bench.add("+5V", component: WorkbenchPower(.fiveVolts))
+        bench.select(WorkbenchTerminal(partID: 4, pinNumber: 1))
+        bench.select(WorkbenchTerminal(partID: 1, pinNumber: 14))
+        #expect(chip.powerState == .powered)
+        bench.select(WorkbenchTerminal(partID: 3, pinNumber: 1))
+        bench.select(WorkbenchTerminal(partID: 1, pinNumber: 1))
+        #expect(chip.pins[3]!.driveState == .low)
+        bench.removeWire(2)
+        #expect(chip.powerState == .disconnected)
+        #expect(chip.pins[3]!.driveState == .undefined)
+        bench.undo()
+        #expect(chip.powerState == .powered)
+        bench.removeWire(3)
+        bench.select(WorkbenchTerminal(partID: 3, pinNumber: 1))
+        bench.select(WorkbenchTerminal(partID: 1, pinNumber: 14))
+        #expect(chip.powerState == .incorrect)
+        #expect(chip.pins[3]!.driveState == .undefined)
+    }
+}
+
+struct PackagePowerTests {
+    @Test("Power units share their chip, prevent duplicates, and preserve the selected mode in files")
+    func sharedPower() throws {
+        for kind in MultiUnitChip.allCases {
+            let bench = Workbench()
+            bench.addNextUnit(for: kind)
+            let gate = try #require(bench.parts.first)
+            let package = try #require(gate.unitPlacement?.packageID)
+            let chip = try #require(gate.component as? any PoweredChip)
+            #expect(bench.powerMode == .automatic)
+            #expect(bench.powerStates[gate.id] == .powered)
+            #expect(!gate.pins.values.contains { $0.direction == .power })
+
+            bench.addUnit(kind.powerUnit, kind: kind, to: package)
+            bench.addUnit(kind.powerUnit, kind: kind, to: package)
+            #expect(bench.parts.count == 2)
+            let power = bench.parts[1]
+            #expect(power.component === gate.component)
+            #expect(power.pins.keys.sorted() == [chip.supplyPins.vss, chip.supplyPins.vdd].sorted())
+            #expect(KiCadSymbol.chipUnits[kind]?[kind.powerUnit.id] != nil)
+
+            bench.setPowerMode(.explicit)
+            #expect(bench.powerStates[gate.id] == .disconnected)
+            for (rail, number) in [(PowerRail.fiveVolts, chip.supplyPins.vdd), (.ground, chip.supplyPins.vss)] {
+                bench.add(rail.rawValue, component: WorkbenchPower(rail))
+                bench.select(WorkbenchTerminal(partID: bench.parts.last!.id, pinNumber: 1))
+                bench.select(WorkbenchTerminal(partID: power.id, pinNumber: number))
+            }
+            #expect(bench.powerStates[gate.id] == .powered)
+            let data = try JSONEncoder().encode(WorkbenchArchive(bench: bench))
+            let restored = Workbench()
+            try restored.open(JSONDecoder().decode(WorkbenchArchive.self, from: data))
+            #expect(restored.powerMode == .explicit)
+            #expect(restored.parts[0].component === restored.parts[1].component)
+            #expect(restored.powerStates[gate.id] == .powered)
+            restored.removePart(power.id)
+            #expect(restored.powerStates[gate.id] == .disconnected)
+            restored.undo()
+            #expect(restored.powerStates[gate.id] == .powered)
+        }
+    }
+}
+
+extension PackagePowerTests {
+    @Test("Older circuit files move gate supply wires to a shared power unit")
+    func migrateGateSupplyWires() throws {
+        let bench = Workbench()
+        bench.addNextUnit(for: .nand)
+        bench.add("GND", component: WorkbenchPower(.ground))
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(WorkbenchArchive(bench: bench))) as? [String: Any])
+        object["version"] = 1
+        object.removeValue(forKey: "powerMode")
+        object["wires"] = [[
+            "id": 1,
+            "first": ["partID": 2, "pinNumber": 1],
+            "second": ["partID": 1, "pinNumber": 7],
+            "bends": []
+        ]]
+        let archive = try JSONDecoder().decode(WorkbenchArchive.self, from: JSONSerialization.data(withJSONObject: object))
+        let restored = Workbench()
+        try restored.open(archive)
+        #expect(restored.powerMode == .explicit)
+        #expect(restored.parts.count == 3)
+        #expect(restored.parts.last?.reference == "U1E")
+        #expect(restored.wires.first?.second == WorkbenchTerminal(partID: 3, pinNumber: 7))
+        #expect(restored.parts[0].component === restored.parts[2].component)
+    }
+
+    @Test("Automatic power and mode changes survive save and Undo")
+    func automaticPowerMode() throws {
+        let bench = Workbench()
+        bench.addNextUnit(for: .jk)
+        bench.setPowerMode(.explicit)
+        bench.undo()
+        #expect(bench.powerMode == .automatic)
+        #expect(bench.powerStates[1] == .powered)
+        let archive = try JSONDecoder().decode(WorkbenchArchive.self, from: JSONEncoder().encode(WorkbenchArchive(bench: bench)))
+        let restored = Workbench()
+        try restored.open(archive)
+        #expect(restored.powerMode == .automatic)
+        #expect(restored.powerStates[1] == .powered)
+    }
+}
+
+struct CD4027PowerLossTests {
+    private final class Circuit {
+        let engine = SimulationEngine()
+        let chip = CD4027()
+        let inverter = CD40106()
+        let vdd = Pin(number: 1, name: "+5V", direction: .power)
+        let vss = Pin(number: 2, name: "GND", direction: .power)
+        let downstream = Net(name: "Q to inverter")
+        let units = [
+            (q: 1, complement: 2, clock: 3, reset: 4, k: 5, j: 6, set: 7),
+            (q: 15, complement: 14, clock: 13, reset: 12, k: 11, j: 10, set: 9)
+        ]
+
+        init(automatic: Bool = false) {
+            engine.automaticallyPowerChips = automatic
+            engine.addComponent(chip)
+            engine.addComponent(inverter)
+            connectTestPower(inverter, to: engine)
+            vdd.drivenSupplyRail = .fiveVolts
+            vss.drivenSupplyRail = .ground
+            vdd.drive(.high)
+            vss.drive(.low)
+            for (source, number) in [(vdd, 16), (vss, 8)] {
+                let net = Net(name: source.name)
+                net.connect(source)
+                net.connect(chip.pins[number]!)
+                engine.addNet(net)
+            }
+            downstream.connect(chip.pins[1]!)
+            downstream.connect(inverter.pins[1]!)
+            engine.addNet(downstream)
+            for unit in units {
+                chip.pins[unit.set]!.receive(.low)
+                chip.pins[unit.reset]!.receive(.low)
+                chip.pins[unit.clock]!.receive(.low)
+                chip.pins[unit.j]!.receive(.high)
+                chip.pins[unit.k]!.receive(.low)
+            }
+        }
+
+        func settle() { #expect(engine.settle()) }
+
+        func clock(_ state: LogicState) {
+            for unit in units { chip.pins[unit.clock]!.receive(state) }
+            settle()
+        }
+
+        func expectOutputs(_ state: LogicState) {
+            for unit in units {
+                #expect(chip.pins[unit.q]!.driveState == state)
+                #expect(chip.pins[unit.complement]!.driveState == state.inverted)
+            }
+        }
+    }
+
+    @Test("Either lost supply clears both flip-flops and clock history, and X reaches downstream logic",
+           arguments: [8, 16])
+    func lossAndRestoration(supplyPin: Int) {
+        let circuit = Circuit()
+        circuit.settle()
+        circuit.clock(.high)
+        circuit.expectOutputs(.high)
+        circuit.clock(.low)
+
+        let supply = supplyPin == 16 ? circuit.vdd : circuit.vss
+        supply.drive(.highImpedance)
+        circuit.settle()
+        circuit.expectOutputs(.undefined)
+        #expect(circuit.downstream.state == .undefined)
+        #expect(circuit.inverter.pins[2]!.driveState == .undefined)
+
+        // The clock changes while unpowered. Restoring power at HIGH must not fabricate an edge.
+        circuit.clock(.high)
+        supply.drive(supplyPin == 16 ? .high : .low)
+        circuit.settle()
+        circuit.expectOutputs(.undefined)
+        circuit.settle()
+        circuit.expectOutputs(.undefined)
+
+        // A valid rising edge with J=K=1 still cannot determine an unknown previous state.
+        for unit in circuit.units { circuit.chip.pins[unit.k]!.receive(.high) }
+        circuit.clock(.low)
+        circuit.clock(.high)
+        circuit.expectOutputs(.undefined)
+
+        // A valid synchronous SET establishes a known state in both units.
+        for unit in circuit.units { circuit.chip.pins[unit.k]!.receive(.low) }
+        circuit.clock(.low)
+        circuit.clock(.high)
+        circuit.expectOutputs(.high)
+        #expect(circuit.inverter.pins[2]!.driveState == .low)
+    }
+
+    @Test("Incorrect power invalidates state and asynchronous SET and RESET recover after restoration")
+    func incorrectSupplyAndRecovery() {
+        let circuit = Circuit()
+        circuit.settle()
+        circuit.clock(.high)
+        circuit.expectOutputs(.high)
+        circuit.vdd.drive(.low)
+        circuit.settle()
+        #expect(circuit.chip.powerState == .incorrect)
+        circuit.expectOutputs(.undefined)
+        circuit.vdd.drive(.high)
+        circuit.settle()
+        circuit.expectOutputs(.undefined)
+
+        circuit.chip.pins[4]!.receive(.high)
+        circuit.chip.pins[9]!.receive(.high)
+        circuit.settle()
+        #expect(circuit.chip.pins[1]!.driveState == .low)
+        #expect(circuit.chip.pins[2]!.driveState == .high)
+        #expect(circuit.chip.pins[15]!.driveState == .high)
+        #expect(circuit.chip.pins[14]!.driveState == .low)
+    }
+
+    @Test("Automatic Power retains normal operation despite disconnected explicit rails")
+    func automaticPower() {
+        let circuit = Circuit(automatic: true)
+        circuit.settle()
+        circuit.clock(.high)
+        circuit.expectOutputs(.high)
+        circuit.vdd.drive(.highImpedance)
+        circuit.vss.drive(.highImpedance)
+        circuit.settle()
+        circuit.expectOutputs(.high)
+        for unit in circuit.units { circuit.chip.pins[unit.k]!.receive(.high) }
+        circuit.clock(.low)
+        circuit.clock(.high)
+        circuit.expectOutputs(.low)
+    }
+
+    @Test("Workbench net rebuilding and Undo cannot restore the old powered flip-flop state")
+    func workbenchPowerLoss() throws {
+        let bench = Workbench()
+        bench.setPowerMode(.explicit)
+        bench.addNextUnit(for: .jk)
+        bench.addUnit(MultiUnitChip.jk.powerUnit, kind: .jk, to: 1)
+        bench.add("+5V", component: WorkbenchPower(.fiveVolts))
+        bench.add("GND", component: WorkbenchPower(.ground))
+        let reset = WorkbenchSwitch()
+        bench.add("Reset", component: reset)
+        func wire(_ source: Int, _ target: Int, _ number: Int) {
+            bench.select(WorkbenchTerminal(partID: source, pinNumber: 1))
+            bench.select(WorkbenchTerminal(partID: target, pinNumber: number))
+        }
+        wire(3, 2, 16)
+        let supplyWire = try #require(bench.wires.last?.id)
+        wire(4, 2, 8)
+        wire(4, 1, 7)
+        wire(5, 1, 4)
+        wire(4, 1, 3)
+        wire(3, 1, 6)
+        wire(3, 1, 5)
+        let chip = try #require(bench.parts[0].component as? CD4027)
+        bench.toggle(reset)
+        #expect(chip.pins[1]!.driveState == .low)
+        bench.toggle(reset)
+        #expect(chip.pins[1]!.driveState == .low)
+        bench.removeWire(supplyWire)
+        #expect(chip.pins[1]!.driveState == .undefined)
+        bench.undo()
+        #expect(bench.powerStates[1] == .powered)
+        #expect(chip.pins[1]!.driveState == .undefined)
     }
 }

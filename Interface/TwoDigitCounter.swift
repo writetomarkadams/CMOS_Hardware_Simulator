@@ -20,6 +20,14 @@ final class TwoDigitCounter {
     private let resetSignal = Pin(number: 3, name: "RESET", direction: .output)
 
     init() {
+        for (rail, number) in [(PowerRail.fiveVolts, 16), (.ground, 8)] {
+            let supply = WorkbenchPower(rail)
+            engine.addComponent(supply)
+            let net = Net(name: rail.rawValue)
+            net.connect(supply.pins[1]!)
+            for chip in [ones, tens] { net.connect(chip.pins[number]!) }
+            engine.addNet(net)
+        }
         for chip in [ones, tens] {
             engine.addComponent(chip)
             chip.pins[1]!.receive(.low) // Preset disabled

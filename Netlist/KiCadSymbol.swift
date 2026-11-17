@@ -140,7 +140,13 @@ struct KiCadSymbol {
     private static func loadUnits(_ kind: MultiUnitChip) -> [Int: Self] {
         guard let symbol = installedSymbol(kind.rawValue) else { return [:] }
         var units: [Int: Self] = [:]
-        for unit in kind.units {
+        for unit in kind.allUnits {
+            if unit.id == kind.powerUnit.id {
+                let prefix = "\(kind.rawValue)_\(unit.id)_"
+                let elements = symbol.children.filter { $0[0] == "symbol" && ($0[1]?.hasPrefix(prefix) ?? false) }.flatMap(\.children)
+                units[unit.id] = rectangularSymbol(elements: elements, pinNumbers: unit.pinNumbers)
+                continue
+            }
             let style = kind == .inverter ? 0 : 1
             let name = "\(kind.rawValue)_\(unit.id)_\(style)"
             guard let expression = symbol.children.first(where: { $0[0] == "symbol" && $0[1] == name })

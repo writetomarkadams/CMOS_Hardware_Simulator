@@ -64,6 +64,13 @@ final class CD4027: LogicComponent {
         pins = Dictionary(uniqueKeysWithValues: (units.flatMap(\.pins) + powerPins).map { ($0.number, $0) })
     }
 
+    func powerDidFail() {
+        for index in units.indices {
+            units[index].state = .undefined
+            units[index].edgeDetector.reset()
+        }
+    }
+
     func evaluate() {
         for index in units.indices {
             units[index].evaluate()

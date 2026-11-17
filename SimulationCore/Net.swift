@@ -32,8 +32,11 @@ final class Net {
         }
         state = strongState == .highImpedance ? weakState : strongState
 
+        let railDrivers = pins.filter { $0.driveState != .highImpedance && $0.drivenSupplyRail != nil }
+        let rail = railDrivers.first?.drivenSupplyRail
+        let supply = railDrivers.allSatisfy { $0.drivenSupplyRail == rail } && state != .undefined ? rail : nil
         for pin in pins {
-            pin.receive(state, strongState: strongState)
+            pin.receive(state, strongState: strongState, supplyRail: supply)
         }
     }
 

@@ -11,6 +11,8 @@ final class Pin: Identifiable {
     let name: String
     let direction: PinDirection
     let isWeakDriver: Bool
+    var drivenSupplyRail: SupplyRail?
+    private(set) var supplyRail: SupplyRail?
 
     // The logic level this pin actively drives.
     // HIGH-Z means it is not driving the net.
@@ -52,8 +54,9 @@ final class Pin: Identifiable {
     }
 
     // Update the logic level observed at this pin.
-    func receive(_ newState: LogicState, strongState: LogicState? = nil) {
+    func receive(_ newState: LogicState, strongState: LogicState? = nil, supplyRail: SupplyRail? = nil) {
         state = newState
+        self.supplyRail = supplyRail
         self.strongState = strongState ?? newState
     }
 }

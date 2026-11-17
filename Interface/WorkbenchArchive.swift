@@ -46,6 +46,7 @@ struct WorkbenchArchive: Codable, FileDocument {
 
     struct Circuit {
         var parts: [WorkbenchPart] = []
+        var wires: [WorkbenchWire] = []
         var positions: [Int: CGPoint] = [:]
         var rotations: [Int: Int] = [:]
         var frequencies: [Int: ClockFrequency] = [:]
@@ -67,12 +68,15 @@ struct WorkbenchArchive: Codable, FileDocument {
 
     static var readableContentTypes: [UTType] { [.json] }
     private let version: Int
+    private let powerMode: PowerMode?
+    var savedPowerMode: PowerMode { powerMode ?? .explicit }
     private let parts: [Part]
     let wires: [WorkbenchWire]
     let junctions: [Int: CGPoint]
 
     init(bench: Workbench) throws {
-        version = 1
+        version = 2
+        powerMode = bench.powerMode
         wires = bench.wires
         junctions = bench.junctions
         parts = try bench.parts.map { part in
@@ -95,7 +99,7 @@ struct WorkbenchArchive: Codable, FileDocument {
     }
 
     func makeCircuit() throws -> Circuit {
-        guard version == 1 else { throw ArchiveError.unsupportedVersion }
+        guard (1...2).contains(version) else { throw ArchiveError.unsupportedVersion }
         var circuit = Circuit()
         var packages: [Int: (kind: MultiUnitChip, chip: any LogicComponent, units: Set<Int>)] = [:]
         var seenParts: [Int: WorkbenchPart] = [:]
@@ -114,7 +118,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             switch part.component {
             case .unit(let kind, let packageID, let unitID):
                 guard part.chipNumber == nil, validID(packageID),
-                      let unit = kind.units.first(where: { $0.id == unitID }) else { throw ArchiveError.invalidCircuit }
+                      let unit = kind.allUnits.first(where: { $0.id == unitID }) else { throw ArchiveError.invalidCircuit }
                 if packages[packageID] == nil {
                     guard chipNumbers.insert(packageID).inserted else { throw ArchiveError.invalidCircuit }
                     packages[packageID] = (kind, kind.makeComponent(), [])
@@ -162,13 +166,49 @@ struct WorkbenchArchive: Codable, FileDocument {
             circuit.colours[part.id] = part.colour
         }
 
+        circuit.wires = wires
+        if version == 1 {
+            // Older files wired supplies on logic units. Move those endpoints to one shared power unit.
+            var migrated: [Int: Int] = [:]
+            for part in Array(circuit.parts) {
+                guard let placement = part.unitPlacement,
+                      let chip = part.component as? any PoweredChip else { continue }
+                let supplyNumbers = [chip.supplyPins.vdd, chip.supplyPins.vss]
+                let hasSupplyWires = wires.contains { wire in
+                    [wire.first, wire.second].contains { $0.partID == part.id && supplyNumbers.contains($0.pinNumber) }
+                }
+                guard hasSupplyWires else { continue }
+                let powerID: Int
+                if let existing = migrated[placement.packageID] {
+                    powerID = existing
+                } else {
+                    powerID = (circuit.parts.map(\.id).max() ?? 0) + 1
+                    let power = WorkbenchPart(id: powerID, name: part.name, component: part.component,
+                                             unitPlacement: ChipUnitPlacement(kind: placement.kind, packageID: placement.packageID,
+                                                                              unit: placement.kind.powerUnit), chipNumber: nil)
+                    circuit.parts.append(power)
+                    seenParts[powerID] = power
+                    let origin = circuit.positions[part.id] ?? .zero
+                    circuit.positions[powerID] = CGPoint(x: origin.x + 200, y: origin.y)
+                    migrated[placement.packageID] = powerID
+                }
+                func migrate(_ endpoint: WorkbenchTerminal) -> WorkbenchTerminal {
+                    endpoint.partID == part.id && supplyNumbers.contains(endpoint.pinNumber)
+                        ? WorkbenchTerminal(partID: powerID, pinNumber: endpoint.pinNumber) : endpoint
+                }
+                circuit.wires = circuit.wires.map {
+                    WorkbenchWire(id: $0.id, first: migrate($0.first), second: migrate($0.second), bends: $0.bends)
+                }
+            }
+        }
+
         guard junctions.allSatisfy({ validID($0.key) && validPoint($0.value) }) else { throw ArchiveError.invalidCircuit }
         func validEndpoint(_ endpoint: WorkbenchTerminal) -> Bool {
             endpoint.isJunction ? junctions[endpoint.pinNumber] != nil
                 : seenParts[endpoint.partID]?.pins[endpoint.pinNumber] != nil
         }
         var wireIDs: Set<Int> = []
-        for wire in wires {
+        for wire in circuit.wires {
             guard validID(wire.id), wireIDs.insert(wire.id).inserted,
                   wire.first != wire.second, validEndpoint(wire.first), validEndpoint(wire.second),
                   wire.bends.allSatisfy(validPoint) else { throw ArchiveError.invalidCircuit }

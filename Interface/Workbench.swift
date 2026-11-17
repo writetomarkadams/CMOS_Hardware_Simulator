@@ -38,6 +38,13 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         }
     }
 
+    var powerUnit: ChipUnit {
+        let chip = makeComponent() as! any PoweredChip
+        return ChipUnit(id: units.count + 1, pinNumbers: [chip.supplyPins.vss, chip.supplyPins.vdd].sorted())
+    }
+
+    var allUnits: [ChipUnit] { units + [powerUnit] }
+
     var units: [ChipUnit] {
         switch self {
         case .and, .nand: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
@@ -54,7 +61,7 @@ struct ChipUnit: Identifiable, Equatable {
     let id: Int
     let pinNumbers: [Int]
 
-    var letter: String { ["A", "B", "C", "D", "E", "F"][id - 1] }
+    var letter: String { String(UnicodeScalar(64 + id)!) }
 }
 
 struct ChipUnitPlacement {
@@ -63,6 +70,7 @@ struct ChipUnitPlacement {
     let unit: ChipUnit
 
     var reference: String { "U\(packageID)\(unit.letter)" }
+    var isPowerUnit: Bool { unit.id == kind.powerUnit.id }
 }
 
 struct WorkbenchPart: Identifiable {
@@ -87,7 +95,9 @@ struct WorkbenchPart: Identifiable {
 
     var pins: [Int: Pin] {
         guard let unitPlacement else { return component.pins }
-        return component.pins.filter { unitPlacement.unit.pinNumbers.contains($0.key) }
+        return component.pins.filter {
+            unitPlacement.unit.pinNumbers.contains($0.key)
+        }
     }
 }
 
@@ -155,6 +165,7 @@ final class WorkbenchPower: LogicComponent {
     init(_ rail: PowerRail) {
         self.rail = rail
         let terminal = Pin(number: 1, name: rail.rawValue, direction: .power)
+        terminal.drivenSupplyRail = rail == .fiveVolts ? .fiveVolts : .ground
         terminal.drive(rail.level)
         pins = [1: terminal]
     }
@@ -184,6 +195,8 @@ final class Workbench {
     private(set) var wires: [WorkbenchWire] = []
     private(set) var readings: [WorkbenchTerminal: LogicState] = [:]
     private(set) var isStable = true
+    private(set) var powerMode: PowerMode = .automatic
+    private(set) var powerStates: [Int: ChipPowerState] = [:]
     private(set) var selectedTerminal: WorkbenchTerminal?
     private(set) var selectedWireID: Int?
     private(set) var pendingBends: [CGPoint] = []
@@ -217,6 +230,7 @@ final class Workbench {
 
     private struct Edit {
         let parts: [WorkbenchPart]
+        let powerMode: PowerMode
         let wires: [WorkbenchWire]
         let junctions: [Int: CGPoint]
         let positions: [Int: CGPoint]
@@ -235,7 +249,7 @@ final class Workbench {
     var canRedo: Bool { !redoHistory.isEmpty }
 
     private var currentEdit: Edit {
-        Edit(parts: parts, wires: wires, junctions: junctions, positions: positions, rotations: rotations,
+        Edit(parts: parts, powerMode: powerMode, wires: wires, junctions: junctions, positions: positions, rotations: rotations,
              clockFrequencies: clockFrequencies, ledColours: ledColours,
              resistances: parts.compactMap { part in
                  guard let resistor = part.component as? Resistor else { return nil }
@@ -266,6 +280,7 @@ final class Workbench {
         removeClocks { source in !edit.parts.contains { $0.component === source } }
         cancelWire()
         selectedWireID = nil
+        powerMode = edit.powerMode
         parts = edit.parts
         wires = edit.wires
         junctions = edit.junctions
@@ -280,6 +295,14 @@ final class Workbench {
         nextChipNumber = edit.nextChipNumber
         nextWireID = edit.nextWireID
         rebuildNets()
+    }
+
+    func setPowerMode(_ mode: PowerMode) {
+        guard mode != powerMode else { return }
+        recordEdit()
+        powerMode = mode
+        engine.automaticallyPowerChips = mode == .automatic
+        settle()
     }
 
     func placeNewPart(_ id: Int, at position: CGPoint) {
@@ -327,12 +350,12 @@ final class Workbench {
         let placed = parts.compactMap { part in
             part.unitPlacement?.packageID == packageID ? part.unitPlacement?.unit : nil
         }
-        return kind.units.filter { !placed.contains($0) }
+        return kind.allUnits.filter { !placed.contains($0) }
     }
 
     func nextUnit(for kind: MultiUnitChip) -> ChipUnitPlacement? {
         for packageID in packages(for: kind) {
-            if let unit = availableUnits(in: packageID, kind: kind).first {
+            if let unit = availableUnits(in: packageID, kind: kind).first(where: { $0.id != kind.powerUnit.id }) {
                 return ChipUnitPlacement(kind: kind, packageID: packageID, unit: unit)
             }
         }
@@ -348,7 +371,7 @@ final class Workbench {
     }
 
     func addUnit(_ unit: ChipUnit, kind: MultiUnitChip, to packageID: Int? = nil) {
-        guard kind.units.contains(unit) else { return }
+        guard kind.allUnits.contains(unit) else { return }
         let component: any LogicComponent
         let reference: Int
         if let packageID {
@@ -384,6 +407,7 @@ final class Workbench {
         parts.append(WorkbenchPart(id: nextPartID, name: name, component: component,
                                    unitPlacement: unitPlacement, chipNumber: chipNumber))
         nextPartID += 1
+        engine.automaticallyPowerChips = powerMode == .automatic
         if !engine.components.contains(where: { $0 === component }) {
             engine.addComponent(component)
         }
@@ -573,7 +597,7 @@ final class Workbench {
     func open(_ archive: WorkbenchArchive) throws {
         let loaded = try archive.makeCircuit()
         recordEdit()
-        restore(Edit(parts: loaded.parts, wires: archive.wires, junctions: archive.junctions,
+        restore(Edit(parts: loaded.parts, powerMode: archive.savedPowerMode, wires: loaded.wires, junctions: archive.junctions,
                      positions: loaded.positions, rotations: loaded.rotations,
                      clockFrequencies: loaded.frequencies, ledColours: loaded.colours, resistances: [],
                      nextPartID: (loaded.parts.map(\.id).max() ?? 0) + 1,
@@ -590,6 +614,7 @@ final class Workbench {
 
     private func rebuildNets() {
         engine = SimulationEngine()
+        engine.automaticallyPowerChips = powerMode == .automatic
         var registered: Set<ObjectIdentifier> = []
         for part in parts where registered.insert(ObjectIdentifier(part.component)).inserted {
             engine.addComponent(part.component)
@@ -629,6 +654,11 @@ final class Workbench {
     }
 
     private func publishReadings() {
+        let power = Dictionary(uniqueKeysWithValues: parts.compactMap { part -> (Int, ChipPowerState)? in
+            guard let chip = part.component as? any PoweredChip else { return nil }
+            return (part.id, powerMode == .automatic ? .powered : chip.powerState)
+        })
+        if power != powerStates { powerStates = power }
         let connectedPins = Set(engine.nets.flatMap { $0.pins.map(ObjectIdentifier.init) })
         var states: [WorkbenchTerminal: LogicState] = [:]
         for part in parts {
