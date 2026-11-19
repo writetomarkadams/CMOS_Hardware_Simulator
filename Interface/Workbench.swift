@@ -670,7 +670,9 @@ final class Workbench {
         for part in parts {
             for pin in part.pins.values {
                 let terminal = WorkbenchTerminal(partID: part.id, pinNumber: pin.number)
-                states[terminal] = connectedPins.contains(ObjectIdentifier(pin)) ? pin.state : pin.driveState
+                let readsNet = connectedPins.contains(ObjectIdentifier(pin)) ||
+                    (part.component is any SwitchedConnectivity && pin.direction == .bidirectional)
+                states[terminal] = readsNet ? pin.state : pin.driveState
             }
         }
         if readings != states { readings = states }

@@ -22,26 +22,29 @@ enum ChipPowerState: Equatable {
 protocol PoweredChip: LogicComponent {
     var supplyPins: (vdd: Int, vss: Int) { get }
 
+    var additionalGroundPins: [Int] { get }
+
     // Sequential models can discard stored state when their supply becomes invalid.
     func powerDidFail()
 }
 
 extension PoweredChip {
     func powerDidFail() {}
+    var additionalGroundPins: [Int] { [] }
 
     var powerState: ChipPowerState {
-        let vdd = pins[supplyPins.vdd]!
-        let vss = pins[supplyPins.vss]!
-        if (vdd.state != .highImpedance && vdd.state != .high) ||
-            (vss.state != .highImpedance && vss.state != .low) ||
-            (vdd.supplyRail != nil && vdd.supplyRail != .fiveVolts) ||
-            (vss.supplyRail != nil && vss.supplyRail != .ground) ||
-            (vdd.state != .highImpedance && vdd.supplyRail != .fiveVolts) ||
-            (vss.state != .highImpedance && vss.supplyRail != .ground) {
-            return .incorrect
+        let supplies = [(supplyPins.vdd, LogicState.high, SupplyRail.fiveVolts)] +
+            ([supplyPins.vss] + additionalGroundPins).map { ($0, .low, .ground) }
+        var disconnected = false
+        for (number, level, rail) in supplies {
+            let pin = pins[number]!
+            if pin.state == .highImpedance && pin.supplyRail == nil {
+                disconnected = true
+            } else if pin.state != level || pin.supplyRail != rail {
+                return .incorrect
+            }
         }
-        guard vdd.supplyRail == .fiveVolts, vss.supplyRail == .ground,
-              vdd.state == .high, vss.state == .low else { return .disconnected }
+        if disconnected { return .disconnected }
         return .powered
     }
 

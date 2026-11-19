@@ -33,6 +33,9 @@ The application opens directly into the Circuit Workbench. Users can place compo
 | CD4011 | Four NAND gates |
 | CD4027 | Two JK flip-flops, rising-edge clocking, asynchronous SET/RESET |
 | CD4060 | External-clock binary divider, falling-edge counting, asynchronous RESET |
+| CD4051 | One bidirectional 8-channel switch |
+| CD4052 | Two bidirectional 4-channel switches with shared selectors |
+| CD4053 | Three bidirectional 2-channel switches with independent selectors |
 | CD4081 | Four AND gates |
 | CD4510 | BCD up/down counter, preset, RESET, Carry In/Out, cascading |
 | CD4017 | Decade counter, ten decoded outputs, clock inhibit, RESET, divide-by-ten carry |
@@ -104,6 +107,12 @@ The engine supports LOW, HIGH, HIGH-Z, and UNDEFINED. UNDEFINED represents X.
 - Missing or incorrect supplies display an orange warning on affected units.
 - Unpowered CMOS outputs drive X through the shared power-validation layer.
 
+### CD4051/CD4052/CD4053 switching
+
+The Workbench uses one rectangular symbol per package with all 16 physical pins, based on the [TI CD405xB datasheet](https://www.ti.com/lit/ds/symlink/cd4051b.pdf). INH HIGH opens every channel. A bank closes its selected channel only when INH is LOW and its selectors are definite. Unknown or floating controls leave the affected bank open.
+
+Automatic Power assumes VDD at +5 V and VSS/VEE at ground. In Explicit Power, connect VDD (16) to +5 V, and VSS (8) and VEE (7) to GND. Invalid power opens every channel. A closed channel joins the two digital nets for driver resolution, including through cascaded switches. The model treats closed switches as ideal connections. Negative supplies, continuous voltages, on-resistance, leakage, and switching timing are outside the digital model.
+
 ### Power-loss lifecycle
 
 The engine invokes the `powerDidFail()` hook when it first observes an unpowered chip. Sequential models use the hook to discard stored state and reset their edge detectors.
@@ -123,7 +132,7 @@ New files save the selected power mode. Older version-1 files reopen in Explicit
 
 ## 6. Verification and Current Milestone
 
-The latest full `xcodebuild test` run passed on 19 November 2026 after adding the five new counters and refining symbol labels. No failing tests remained.
+The macOS Xcode build and full test suite passed on 19 November 2026 after adding CD4051, CD4052, and CD4053.
 
 Coverage includes:
 
@@ -134,12 +143,13 @@ Coverage includes:
 - CD4511/CD4543 controls and wired seven-segment displays.
 - MAN72A polarity, symbol pin mapping, CD4543 integration, and save/reopen.
 - New counter rollover, inhibit/enable behaviour, preset, RESET, carry cascading, power loss, symbols, and archive integration.
+- CD4051/CD4052/CD4053 selector combinations, inhibit, floating controls, two-way propagation, switch cascades, contention, weak pulls, power loss and restoration, symbol pin mapping, and Workbench save/reopen.
 
 Live Workbench checks have verified wiring previews and bends, wire deletion, Undo/Redo shortcuts, placement after scrolling, junctions, file reopening, separate power symbols, and the CD4026 library entry and rendered symbol.
 
 Previous project notes record successful builds and launches on both the work and home Macs. The latest features have been tested on the current development Mac; their latest home-Mac build has not been independently confirmed.
 
-The recent MAN72A and five-counter changes are present in the working tree. Commit and push status should be checked before switching Macs.
+Check commit and push status before switching Macs.
 
 ## 7. Known Limitations and Next Development Tasks
 
@@ -181,7 +191,7 @@ Push changes before switching computers and pull before editing on the other Mac
 
 ## 9. Current Session / Handoff Notes
 
-**Last confirmed milestone:** CD4017, CD4026, CD4516, CD4518, and CD4520 are integrated with models, symbols, power handling, component library entries, and save/open support. Full Xcode tests passed.
+**Last confirmed milestone:** CD4051, CD4052, and CD4053 are integrated as bidirectional digital switches, with library entries, symbols, power handling, and save/open support. Full Xcode tests passed.
 
 **Suggested next task:** Continue sequential power-loss handling with CD4510, keeping its unknown-input and clock-transition work in a clearly scoped stage.
 

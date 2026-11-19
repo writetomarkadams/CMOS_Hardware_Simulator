@@ -541,6 +541,8 @@ struct WorkbenchView: View {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if let kind = CounterChip.kind(of: part.component), let symbol = KiCadSymbol.additionalCounters[kind] {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+            } else if let device = part.component as? AnalogSwitch, let symbol = KiCadSymbol.analogSwitches[device.kind] {
+                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is CD4510, let symbol = KiCadSymbol.counter {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is CD4060, let symbol = KiCadSymbol.counter4060 {

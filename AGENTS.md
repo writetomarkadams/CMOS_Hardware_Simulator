@@ -43,6 +43,16 @@ The following components have been implemented and tested.
 | CD4518 | Dual BCD counter |
 | CD4520 | Dual binary counter |
 
+### Bidirectional switches
+
+| Component | Description |
+|---|---|
+| CD4051 | One 8-channel switch |
+| CD4052 | Two 4-channel switches with shared A/B selectors |
+| CD4053 | Three 2-channel switches with independent A/B/C selectors |
+
+These packages model closed channels as bidirectional digital net connections. Preserve driver strength, contention, and high impedance across connected nets. In Explicit Power mode wire VDD to +5 V and both VSS and VEE to GND. INH must be LOW to enable routing.
+
 ### BCD-to-7-segment decoders
 
 | Component | Description |

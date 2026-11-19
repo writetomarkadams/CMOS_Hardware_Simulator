@@ -19,6 +19,7 @@ struct ComponentLibraryView: View {
         case sevenSegmentDisplay, commonAnodeDisplay
         case power(PowerRail)
         case additionalCounter(CounterChip)
+        case analogSwitch(AnalogSwitchKind)
         case counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, led, pullUp
 
         var id: Self { self }
@@ -29,6 +30,7 @@ struct ComponentLibraryView: View {
             case .chipPower(let kind, let package): "\(kind.partName) U\(package)\(kind.powerUnit.letter)"
             case .counter: "CD4510"
             case .additionalCounter(let kind): kind.rawValue
+            case .analogSwitch(let kind): kind.rawValue
             case .displayDriver(let kind): kind.rawValue
             case .sevenSegmentDisplay: "MAN74A"
             case .commonAnodeDisplay: "MAN72A"
@@ -51,6 +53,7 @@ struct ComponentLibraryView: View {
             case .chipPower: "Shared Power Unit · VDD / VSS"
             case .counter: "BCD Up/Down Counter"
             case .additionalCounter(let kind): kind.detail
+            case .analogSwitch(let kind): kind.detail
             case .displayDriver: "BCD to Seven-Segment Latch and Driver"
             case .sevenSegmentDisplay: "Single Digit LED Display · Common Cathode"
             case .commonAnodeDisplay: "Single Digit LED Display · Common Anode"
@@ -70,7 +73,7 @@ struct ComponentLibraryView: View {
 
         var icon: String {
             switch self {
-            case .chip, .chipPower, .counter, .rippleCounter, .displayDriver, .additionalCounter: "cpu"
+            case .chip, .chipPower, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
             case .transistor: "circle.branch"
             case .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
             case .pullUp, .power(.fiveVolts): "arrow.up"
@@ -95,6 +98,7 @@ struct ComponentLibraryView: View {
         (MultiUnitChip.allCases.map(Entry.chip) + [.counter, .rippleCounter]
             + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
             + CounterChip.allCases.map(Entry.additionalCounter)
+            + AnalogSwitchKind.allCases.map(Entry.analogSwitch)
             + MultiUnitChip.allCases.flatMap { kind in
                 bench.packages(for: kind).filter {
                     bench.availableUnits(in: $0, kind: kind).contains(kind.powerUnit)
@@ -195,6 +199,8 @@ struct ComponentLibraryView: View {
             bench.addNextUnit(for: kind)
         case .chipPower(let kind, let package):
             bench.addUnit(kind.powerUnit, kind: kind, to: package)
+        case .analogSwitch(let kind):
+            bench.add(kind.rawValue, component: AnalogSwitch(kind))
         case .additionalCounter(let kind):
             bench.add(kind.rawValue, component: kind.makeComponent())
         case .counter:

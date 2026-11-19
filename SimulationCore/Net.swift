@@ -21,6 +21,14 @@ final class Net {
 
     // Determine the net's logic state from its drivers.
     func resolve() {
+        Self.resolve(pins: pins, nets: [self])
+    }
+
+    static func resolve(together nets: [Net]) {
+        resolve(pins: nets.flatMap(\.pins), nets: nets)
+    }
+
+    private static func resolve(pins: [Pin], nets: [Net]) {
         var strongState = LogicState.highImpedance
         var weakState = LogicState.highImpedance
         for pin in pins where pin.driveState != .highImpedance {
@@ -30,17 +38,18 @@ final class Net {
                 strongState = merged(strongState, pin.driveState)
             }
         }
-        state = strongState == .highImpedance ? weakState : strongState
+        let state = strongState == .highImpedance ? weakState : strongState
 
         let railDrivers = pins.filter { $0.driveState != .highImpedance && $0.drivenSupplyRail != nil }
         let rail = railDrivers.first?.drivenSupplyRail
         let supply = railDrivers.allSatisfy { $0.drivenSupplyRail == rail } && state != .undefined ? rail : nil
+        for net in nets { net.state = state }
         for pin in pins {
             pin.receive(state, strongState: strongState, supplyRail: supply)
         }
     }
 
-    private func merged(_ current: LogicState, _ next: LogicState) -> LogicState {
+    private static func merged(_ current: LogicState, _ next: LogicState) -> LogicState {
         if current == .highImpedance { return next }
         return current == next ? current : .undefined
     }

@@ -25,7 +25,7 @@ struct SchematicSymbolView: View {
         if let resistor {
             return "\(resistor.value.formatted()) \(resistor.unit.rawValue)"
         }
-        if CounterChip.kind(of: part.component) != nil || part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
+        if part.component is AnalogSwitch || CounterChip.kind(of: part.component) != nil || part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
             return part.name
         }
         return isDiscrete ? part.name : part.unitPlacement?.kind.rawValue ?? "4510"

@@ -107,6 +107,22 @@ struct KiCadSymbol {
         }
     )
 
+    // Draw the physical DIP pin order and use exactly the labels from the model.
+    static let analogSwitches: [AnalogSwitchKind: Self] = Dictionary(
+        uniqueKeysWithValues: AnalogSwitchKind.allCases.map { kind in
+            let chip = AnalogSwitch(kind)
+            let terminals = (1...16).map { number in
+                let left = number <= 8
+                let row = left ? number - 1 : 16 - number
+                return Terminal(id: number, name: chip.pins[number]!.name, style: "line",
+                                position: CGPoint(x: left ? -20.32 : 20.32, y: -8.89 + Double(row) * 2.54),
+                                inward: CGVector(dx: left ? 1 : -1, dy: 0), length: 5.08)
+            }
+            return (kind, Self(body: CGRect(x: -15.24, y: -11.43, width: 30.48, height: 22.86),
+                               terminals: terminals))
+        }
+    )
+
     private init(body: CGRect, terminals: [Terminal]) {
         self.body = body
         self.terminals = terminals

@@ -31,7 +31,19 @@ protocol LogicComponent: AnyObject {
 }
 
 
+// A closed connection joins terminals without driving either terminal.
+protocol SwitchedConnectivity: PoweredChip {
+    var closedConnections: [(Pin, Pin)] { get }
+}
+
 final class SimulationEngine {
+    private struct NetLink: Equatable {
+        let first: Int
+        let second: Int
+    }
+
+    private var switches: [any SwitchedConnectivity] = []
+
 
     private(set) var components: [any LogicComponent] = []
     private(set) var nets: [Net] = []
@@ -45,6 +57,9 @@ final class SimulationEngine {
 
     func addComponent(_ component: any LogicComponent) {
         components.append(component)
+        if let device = component as? any SwitchedConnectivity {
+            switches.append(device)
+        }
         for pin in component.pins.values where pin.direction != .input {
             drivenPins.append(pin)
             previousStates.append(pin.driveState)
@@ -59,11 +74,40 @@ final class SimulationEngine {
     @discardableResult
     func settle() -> Bool {
 
-        for net in nets {
-            net.resolve()
+        // Unwired switch terminals still belong to the electrical island when closed.
+        var electricalNets = nets
+        var netByPin: [ObjectIdentifier: Int] = [:]
+        if !switches.isEmpty {
+            for (index, net) in nets.enumerated() {
+                for pin in net.pins { netByPin[ObjectIdentifier(pin)] = index }
+            }
+            for device in switches {
+                for pin in device.pins.values where pin.direction == .bidirectional {
+                    let id = ObjectIdentifier(pin)
+                    guard netByPin[id] == nil else { continue }
+                    let net = Net(name: pin.name)
+                    net.connect(pin)
+                    netByPin[id] = electricalNets.count
+                    electricalNets.append(net)
+                }
+            }
         }
 
+        var links: [NetLink] = []
+        resolve(electricalNets, links: links)
         for _ in 0..<maximumIterations {
+            let nextLinks = switches.flatMap { device -> [NetLink] in
+                guard automaticallyPowerChips || device.powerState == .powered else { return [] }
+                return device.closedConnections.map { first, second in
+                    NetLink(first: netByPin[ObjectIdentifier(first)]!, second: netByPin[ObjectIdentifier(second)]!)
+                }
+            }
+            if nextLinks != links {
+                links = nextLinks
+                resolve(electricalNets, links: links)
+                continue
+            }
+
             for index in drivenPins.indices {
                 previousStates[index] = drivenPins[index].driveState
             }
@@ -72,7 +116,7 @@ final class SimulationEngine {
                     if unpoweredChips.insert(ObjectIdentifier(chip)).inserted {
                         chip.powerDidFail()
                     }
-                    chip.disableOutputs()
+                    if !(chip is any SwitchedConnectivity) { chip.disableOutputs() }
                 } else {
                     unpoweredChips.remove(ObjectIdentifier(component))
                     component.evaluate()
@@ -86,13 +130,41 @@ final class SimulationEngine {
             }
             if !changed { return true }
 
-            for net in nets {
-                net.resolve()
-            }
+            resolve(electricalNets, links: links)
         }
 
         print("WARNING: Simulation did not settle.")
         return false
+    }
+
+    private func resolve(_ nets: [Net], links: [NetLink]) {
+        guard !links.isEmpty else {
+            for net in nets { net.resolve() }
+            return
+        }
+
+        var neighbors: [Int: [Int]] = [:]
+        for link in links where link.first != link.second {
+            neighbors[link.first, default: []].append(link.second)
+            neighbors[link.second, default: []].append(link.first)
+        }
+
+        var visited: Set<Int> = []
+        for index in nets.indices where visited.insert(index).inserted {
+            guard neighbors[index] != nil else {
+                nets[index].resolve()
+                continue
+            }
+            var island = [nets[index]]
+            var pending = [index]
+            while let current = pending.popLast() {
+                for neighbor in neighbors[current, default: []] where visited.insert(neighbor).inserted {
+                    island.append(nets[neighbor])
+                    pending.append(neighbor)
+                }
+            }
+            Net.resolve(together: island)
+        }
     }
 }
 

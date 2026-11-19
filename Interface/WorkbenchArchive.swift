@@ -7,6 +7,7 @@ struct WorkbenchArchive: Codable, FileDocument {
         case counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
         case driver(SevenSegmentDriverKind)
         case additionalCounter(CounterChip)
+        case analogSwitch(AnalogSwitchKind)
         case resistance(Double, ResistanceUnit)
         case power(PowerRail)
         case switchInput(showsValue: Bool, isOn: Bool)
@@ -21,6 +22,7 @@ struct WorkbenchArchive: Codable, FileDocument {
                 return
             }
             switch part.component {
+            case let device as AnalogSwitch: self = .analogSwitch(device.kind)
             case is CD4510: self = .counter
             case is CD4060: self = .divider
             case is MAN74A: self = .display
@@ -135,6 +137,7 @@ struct WorkbenchArchive: Codable, FileDocument {
                 component = package.chip
                 placement = ChipUnitPlacement(kind: kind, packageID: packageID, unit: unit)
             case .additionalCounter(let kind): component = kind.makeComponent()
+            case .analogSwitch(let kind): component = AnalogSwitch(kind)
             case .counter: component = CD4510()
             case .divider: component = CD4060()
             case .display: component = MAN74A()
