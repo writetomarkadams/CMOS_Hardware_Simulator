@@ -1487,3 +1487,53 @@ struct CD4027PowerLossTests {
         #expect(chip.pins[1]!.driveState == .undefined)
     }
 }
+
+struct MAN72ATests {
+    @Test("MAN72A common-anode pins use the KiCad pinout and active-low segments")
+    func segmentPolarity() throws {
+        let display = MAN72A()
+        let symbol = try #require(KiCadSymbol.man72a)
+        #expect(symbol.terminals.map(\.id).sorted() == display.pins.keys.sorted())
+        #expect(display.pins[3]?.name == "CA")
+        #expect(display.pins[14]?.name == "CA")
+        #expect(display.pins[6]?.name == "DP")
+        for number in MAN72A.segmentPins {
+            #expect(!display.isLit(number) { _ in .low })
+            #expect(display.isLit(number) { pin in
+                if pin == 3 { return .high }
+                if pin == 14 { return .highImpedance }
+                return .low
+            })
+            #expect(!display.isLit(number) { $0 == number ? .undefined : .high })
+        }
+        #expect(!display.isLit(1) { $0 == 3 ? .high : .low })
+    }
+
+    @Test("CD4543 with PH high lights a wired MAN72A and the display survives save and reopen")
+    func wiredDisplay() throws {
+        let bench = Workbench()
+        bench.add("CD4543", component: SevenSegmentDriver(.cd4543))
+        bench.add("MAN72A", component: MAN72A())
+        bench.add("+5V", component: WorkbenchPower(.fiveVolts))
+        bench.add("GND", component: WorkbenchPower(.ground))
+        func wire(_ a: Int, _ pa: Int, _ b: Int, _ pb: Int) {
+            bench.select(WorkbenchTerminal(partID: a, pinNumber: pa))
+            bench.select(WorkbenchTerminal(partID: b, pinNumber: pb))
+        }
+        wire(3, 1, 2, 3)
+        for number in [1, 6, 5] { wire(3, 1, 1, number) } // Transparent latch, phase inversion, BCD 1.
+        for number in [7, 3, 2, 4] { wire(4, 1, 1, number) }
+        let outputs = [9, 10, 11, 12, 13, 15, 14]
+        for (output, segment) in zip(outputs, MAN72A.segmentPins) { wire(1, output, 2, segment) }
+        func litSegments(_ bench: Workbench) throws -> [Int] {
+            let display = try #require(bench.parts[1].component as? MAN72A)
+            return MAN72A.segmentPins.filter { pin in
+                display.isLit(pin) { bench.readings[WorkbenchTerminal(partID: 2, pinNumber: $0)] ?? .highImpedance }
+            }
+        }
+        #expect(try litSegments(bench) == [13, 10])
+        let restored = Workbench()
+        try restored.open(JSONDecoder().decode(WorkbenchArchive.self, from: JSONEncoder().encode(WorkbenchArchive(bench: bench))))
+        #expect(try litSegments(restored) == [13, 10])
+    }
+}

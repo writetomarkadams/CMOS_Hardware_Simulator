@@ -99,6 +99,53 @@ struct KiCadSymbol {
         return nil
     }
 
+    static let additionalCounters: [CounterChip: Self] = Dictionary(
+        uniqueKeysWithValues: CounterChip.allCases.map { kind in
+            let imported = rectangularSymbol(elements: installedSymbol(String(kind.rawValue.dropFirst(2)))?.children.flatMap(\.children),
+                                             pinNumbers: Array(1...16))
+            return (kind, imported ?? counterSymbol(kind.makeComponent()))
+        }
+    )
+
+    private init(body: CGRect, terminals: [Terminal]) {
+        self.body = body
+        self.terminals = terminals
+        isCircular = false
+        gateOutline = nil
+        polygon = []
+        markings = []
+    }
+
+    private static func counterSymbol(_ chip: any PoweredChip) -> Self {
+        let inputs = chip.pins.values.filter { $0.direction == .input }.sorted { $0.number < $1.number }
+        let outputs = chip.pins.values.filter { $0.direction == .output }.sorted { $0.number < $1.number }
+        var terminals: [Terminal] = []
+        for (pins, x, direction) in [(inputs, -12.7, 1.0), (outputs, 12.7, -1.0)] {
+            for (row, pin) in pins.enumerated() {
+                let label: String
+                switch pin.name {
+                case "CLOCK INHIBIT": label = "INH"
+                case "DISPLAY ENABLE": label = "DEI"
+                case "DISPLAY ENABLE OUT": label = "DEO"
+                case "CARRY OUT": label = "CO"
+                case "CARRY IN": label = "CI"
+                case "UNGATED c": label = "Uc"
+                case "UP/DOWN": label = "U/D"
+                case "RESET": label = "RST"
+                default: label = pin.name
+                }
+                terminals.append(Terminal(id: pin.number, name: label, style: "line",
+                                          position: CGPoint(x: x, y: -11.43 + Double(row) * 2.54),
+                                          inward: CGVector(dx: direction, dy: 0), length: 5.08))
+            }
+        }
+        terminals.append(Terminal(id: chip.supplyPins.vdd, name: "VDD", style: "line",
+                                  position: CGPoint(x: 0, y: -20.32), inward: CGVector(dx: 0, dy: 1), length: 5.08))
+        terminals.append(Terminal(id: chip.supplyPins.vss, name: "VSS", style: "line",
+                                  position: CGPoint(x: 0, y: 20.32), inward: CGVector(dx: 0, dy: -1), length: 5.08))
+        return Self(body: CGRect(x: -7.62, y: -15.24, width: 15.24, height: 30.48), terminals: terminals)
+    }
+
     static let counter = rectangularSymbol(
         elements: installedSymbol("4510")?.children.flatMap(\.children),
         pinNumbers: Array(1...16)
@@ -114,6 +161,11 @@ struct KiCadSymbol {
         .cd4543: rectangularSymbol(elements: installedSymbol("4543")?.children.flatMap(\.children),
                                    pinNumbers: Array(1...16))
     ].compactMapValues { $0 }
+
+    static let man72a = rectangularSymbol(
+        elements: deviceElements("MAN72A", library: "Display_Character")?.filter { $0[1] != "no_connect" },
+        pinNumbers: (MAN72A.segmentPins + MAN72A.commonPins).sorted()
+    )
 
     static let man74a = rectangularSymbol(
         elements: deviceElements("MAN74A", library: "Display_Character")?.filter { $0[1] != "no_connect" },
@@ -141,7 +193,7 @@ struct KiCadSymbol {
         guard let symbol = installedSymbol(kind.rawValue) else { return [:] }
         var units: [Int: Self] = [:]
         for unit in kind.allUnits {
-            if unit.id == kind.powerUnit.id {
+            if unit.id == kind.powerUnit.id || kind == .dualBCD || kind == .dualBinary {
                 let prefix = "\(kind.rawValue)_\(unit.id)_"
                 let elements = symbol.children.filter { $0[0] == "symbol" && ($0[1]?.hasPrefix(prefix) ?? false) }.flatMap(\.children)
                 units[unit.id] = rectangularSymbol(elements: elements, pinNumbers: unit.pinNumbers)

@@ -17,7 +17,7 @@ struct SchematicSymbolView: View {
     var editResistance: (() -> Void)? = nil
 
     private var resistor: Resistor? { part.component as? Resistor }
-    private var display: MAN74A? { part.component as? MAN74A }
+    private var display: SevenSegmentDisplay? { part.component as? SevenSegmentDisplay }
     private var isDiode: Bool { part.component is Diode1N4148 }
     private var isDiscrete: Bool { symbol.isCircular || resistor != nil || isDiode }
 
@@ -25,7 +25,7 @@ struct SchematicSymbolView: View {
         if let resistor {
             return "\(resistor.value.formatted()) \(resistor.unit.rawValue)"
         }
-        if part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
+        if CounterChip.kind(of: part.component) != nil || part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
             return part.name
         }
         return isDiscrete ? part.name : part.unitPlacement?.kind.rawValue ?? "4510"
@@ -122,8 +122,12 @@ struct SchematicSymbolView: View {
                height: bounds.height * scale + 2 * padding)
     }
 
-    private func drawSegments(of display: MAN74A, in context: GraphicsContext) {
-        // Coordinates follow the digit drawn in the KiCad MAN74A symbol.
+    private func drawSegments(of display: SevenSegmentDisplay, in context: GraphicsContext) {
+        // MAN72A uses the same segment geometry shifted right, with a left decimal point.
+        func segmentPoint(_ position: CGPoint) -> CGPoint {
+            point(CGPoint(x: position.x + (display.commonAnode ? 1.778 : 0),
+                          y: position.y - (display.commonAnode ? 0.254 : 0)))
+        }
         let segments: [(CGPoint, CGPoint)] = [
             (CGPoint(x: -0.508, y: -11.43), CGPoint(x: 1.524, y: -11.43)),
             (CGPoint(x: 2.032, y: -10.922), CGPoint(x: 1.778, y: -8.89)),
@@ -139,15 +143,15 @@ struct SchematicSymbolView: View {
             }
             return lit ? .red : outline.opacity(0.16)
         }
-        for (number, segment) in zip(MAN74A.segmentPins, segments) {
+        for (number, segment) in zip(display.segmentNumbers, segments) {
             var path = Path()
-            path.move(to: point(segment.0))
-            path.addLine(to: point(segment.1))
+            path.move(to: segmentPoint(segment.0))
+            path.addLine(to: segmentPoint(segment.1))
             context.stroke(path, with: .color(color(for: number)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
         }
-        let dot = point(CGPoint(x: 2.794, y: -5.334))
+        let dot = point(display.commonAnode ? CGPoint(x: -0.762, y: -5.588) : CGPoint(x: 2.794, y: -5.334))
         context.fill(Path(ellipseIn: CGRect(x: dot.x - 1.5, y: dot.y - 1.5, width: 3, height: 3)),
-                     with: .color(color(for: 9)))
+                     with: .color(color(for: display.segmentNumbers[7])))
     }
 
     private func symbolOutline() -> Path {

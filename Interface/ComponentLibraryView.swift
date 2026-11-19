@@ -16,8 +16,9 @@ struct ComponentLibraryView: View {
         case chip(MultiUnitChip)
         case chipPower(MultiUnitChip, Int)
         case displayDriver(SevenSegmentDriverKind)
-        case sevenSegmentDisplay
+        case sevenSegmentDisplay, commonAnodeDisplay
         case power(PowerRail)
+        case additionalCounter(CounterChip)
         case counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, led, pullUp
 
         var id: Self { self }
@@ -27,8 +28,10 @@ struct ComponentLibraryView: View {
             case .chip(let kind): kind.partName
             case .chipPower(let kind, let package): "\(kind.partName) U\(package)\(kind.powerUnit.letter)"
             case .counter: "CD4510"
+            case .additionalCounter(let kind): kind.rawValue
             case .displayDriver(let kind): kind.rawValue
             case .sevenSegmentDisplay: "MAN74A"
+            case .commonAnodeDisplay: "MAN72A"
             case .rippleCounter: "CD4060"
             case .transistor: "2N3904"
             case .resistor: "R_Small"
@@ -47,8 +50,10 @@ struct ComponentLibraryView: View {
             case .chip(let kind): kind.unitName
             case .chipPower: "Shared Power Unit · VDD / VSS"
             case .counter: "BCD Up/Down Counter"
+            case .additionalCounter(let kind): kind.detail
             case .displayDriver: "BCD to Seven-Segment Latch and Driver"
             case .sevenSegmentDisplay: "Single Digit LED Display · Common Cathode"
+            case .commonAnodeDisplay: "Single Digit LED Display · Common Anode"
             case .rippleCounter: "14-stage Binary Counter"
             case .transistor: "NPN Transistor (Digital Switch)"
             case .resistor: "Resistor"
@@ -65,7 +70,7 @@ struct ComponentLibraryView: View {
 
         var icon: String {
             switch self {
-            case .chip, .chipPower, .counter, .rippleCounter, .displayDriver: "cpu"
+            case .chip, .chipPower, .counter, .rippleCounter, .displayDriver, .additionalCounter: "cpu"
             case .transistor: "circle.branch"
             case .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
             case .pullUp, .power(.fiveVolts): "arrow.up"
@@ -74,7 +79,7 @@ struct ComponentLibraryView: View {
             case .logicInput: "0.square"
             case .clock: "waveform.path"
             case .led: "lightbulb"
-            case .sevenSegmentDisplay: "number.square"
+            case .sevenSegmentDisplay, .commonAnodeDisplay: "number.square"
             }
         }
 
@@ -89,6 +94,7 @@ struct ComponentLibraryView: View {
     private var chips: [Entry] {
         (MultiUnitChip.allCases.map(Entry.chip) + [.counter, .rippleCounter]
             + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
+            + CounterChip.allCases.map(Entry.additionalCounter)
             + MultiUnitChip.allCases.flatMap { kind in
                 bench.packages(for: kind).filter {
                     bench.availableUnits(in: $0, kind: kind).contains(kind.powerUnit)
@@ -103,7 +109,7 @@ struct ComponentLibraryView: View {
     }
 
     private var sourcesAndIndicators: [Entry] {
-        [Entry.power(.fiveVolts), .power(.ground), .logicSwitch, .logicInput, .clock, .led, .sevenSegmentDisplay, .pullUp].filter { $0.matches(search) }
+        [Entry.power(.fiveVolts), .power(.ground), .logicSwitch, .logicInput, .clock, .led, .sevenSegmentDisplay, .commonAnodeDisplay, .pullUp].filter { $0.matches(search) }
     }
 
     var body: some View {
@@ -189,6 +195,8 @@ struct ComponentLibraryView: View {
             bench.addNextUnit(for: kind)
         case .chipPower(let kind, let package):
             bench.addUnit(kind.powerUnit, kind: kind, to: package)
+        case .additionalCounter(let kind):
+            bench.add(kind.rawValue, component: kind.makeComponent())
         case .counter:
             bench.add("CD4510", component: CD4510())
         case .rippleCounter:
@@ -197,6 +205,8 @@ struct ComponentLibraryView: View {
             bench.add(kind.rawValue, component: SevenSegmentDriver(kind))
         case .sevenSegmentDisplay:
             bench.add("MAN74A", component: MAN74A())
+        case .commonAnodeDisplay:
+            bench.add("MAN72A", component: MAN72A())
         case .transistor:
             bench.add("2N3904", component: NPN2N3904())
         case .resistor:

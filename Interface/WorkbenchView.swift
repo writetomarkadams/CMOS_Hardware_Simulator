@@ -539,11 +539,15 @@ struct WorkbenchView: View {
             if let placement = part.unitPlacement,
                let symbol = KiCadSymbol.chipUnits[placement.kind]?[placement.unit.id] {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+            } else if let kind = CounterChip.kind(of: part.component), let symbol = KiCadSymbol.additionalCounters[kind] {
+                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is CD4510, let symbol = KiCadSymbol.counter {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is CD4060, let symbol = KiCadSymbol.counter4060 {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if let driver = part.component as? SevenSegmentDriver, let symbol = KiCadSymbol.displayDrivers[driver.kind] {
+                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+            } else if part.component is MAN72A, let symbol = KiCadSymbol.man72a {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is MAN74A, let symbol = KiCadSymbol.man74a {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)

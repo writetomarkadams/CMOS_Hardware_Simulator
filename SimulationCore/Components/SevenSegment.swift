@@ -96,18 +96,21 @@ final class SevenSegmentDriver: LogicComponent {
     }
 }
 
-final class MAN74A: LogicComponent {
-    static let segmentPins = [14, 13, 8, 7, 6, 1, 2, 9]
-    static let commonPins = [4, 12]
-
+class SevenSegmentDisplay: LogicComponent {
     let pins: [Int: Pin]
+    let segmentNumbers: [Int]
+    let commonNumbers: [Int]
+    let commonAnode: Bool
 
-    init() {
-        var pins = Dictionary(uniqueKeysWithValues: zip(Self.segmentPins, ["A", "B", "C", "D", "E", "F", "G", "DP"]).map {
+    init(segments: [Int], commons: [Int], commonAnode: Bool) {
+        self.segmentNumbers = segments
+        self.commonNumbers = commons
+        self.commonAnode = commonAnode
+        var pins = Dictionary(uniqueKeysWithValues: zip(segments, ["A", "B", "C", "D", "E", "F", "G", "DP"]).map {
             ($0, Pin(number: $0, name: $1, direction: .input))
         })
-        for number in Self.commonPins {
-            pins[number] = Pin(number: number, name: "CC", direction: .input)
+        for number in commons {
+            pins[number] = Pin(number: number, name: commonAnode ? "CA" : "CC", direction: .input)
         }
         self.pins = pins
     }
@@ -115,8 +118,27 @@ final class MAN74A: LogicComponent {
     func evaluate() {}
 
     func isLit(_ number: Int, reading: (Int) -> LogicState) -> Bool {
-        guard reading(number) == .high else { return false }
-        let commons = Self.commonPins.map(reading)
-        return commons.contains(.low) && commons.allSatisfy { $0 == .low || $0 == .highImpedance }
+        guard reading(number) == (commonAnode ? .low : .high) else { return false }
+        let commonLevel: LogicState = commonAnode ? .high : .low
+        let commons = commonNumbers.map(reading)
+        return commons.contains(commonLevel) && commons.allSatisfy { $0 == commonLevel || $0 == .highImpedance }
+    }
+}
+
+final class MAN74A: SevenSegmentDisplay {
+    static let segmentPins = [14, 13, 8, 7, 6, 1, 2, 9]
+    static let commonPins = [4, 12]
+
+    init() {
+        super.init(segments: Self.segmentPins, commons: Self.commonPins, commonAnode: false)
+    }
+}
+
+final class MAN72A: SevenSegmentDisplay {
+    static let segmentPins = [1, 13, 10, 8, 7, 2, 11, 6]
+    static let commonPins = [3, 14]
+
+    init() {
+        super.init(segments: Self.segmentPins, commons: Self.commonPins, commonAnode: true)
     }
 }

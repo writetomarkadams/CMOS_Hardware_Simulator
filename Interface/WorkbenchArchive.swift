@@ -4,8 +4,9 @@ import UniformTypeIdentifiers
 struct WorkbenchArchive: Codable, FileDocument {
     private enum Component: Codable {
         case unit(MultiUnitChip, package: Int, unit: Int)
-        case counter, divider, display, transistor, diode, led, pullUp, clock
+        case counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
         case driver(SevenSegmentDriverKind)
+        case additionalCounter(CounterChip)
         case resistance(Double, ResistanceUnit)
         case power(PowerRail)
         case switchInput(showsValue: Bool, isOn: Bool)
@@ -15,10 +16,15 @@ struct WorkbenchArchive: Codable, FileDocument {
                 self = .unit(placement.kind, package: placement.packageID, unit: placement.unit.id)
                 return
             }
+            if let kind = CounterChip.kind(of: part.component) {
+                self = .additionalCounter(kind)
+                return
+            }
             switch part.component {
             case is CD4510: self = .counter
             case is CD4060: self = .divider
             case is MAN74A: self = .display
+            case is MAN72A: self = .displayMAN72A
             case is NPN2N3904: self = .transistor
             case is Diode1N4148: self = .diode
             case is WorkbenchLED: self = .led
@@ -128,9 +134,11 @@ struct WorkbenchArchive: Codable, FileDocument {
                 packages[packageID] = package
                 component = package.chip
                 placement = ChipUnitPlacement(kind: kind, packageID: packageID, unit: unit)
+            case .additionalCounter(let kind): component = kind.makeComponent()
             case .counter: component = CD4510()
             case .divider: component = CD4060()
             case .display: component = MAN74A()
+            case .displayMAN72A: component = MAN72A()
             case .driver(let kind): component = SevenSegmentDriver(kind)
             case .transistor: component = NPN2N3904()
             case .diode: component = Diode1N4148()

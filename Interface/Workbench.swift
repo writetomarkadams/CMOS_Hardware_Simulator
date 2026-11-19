@@ -16,6 +16,8 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     case nand = "4011"
     case jk = "4027"
     case inverter = "40106"
+    case dualBCD = "4518"
+    case dualBinary = "4520"
 
     var id: String { rawValue }
     var partName: String { "CD\(rawValue)" }
@@ -26,6 +28,8 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         case .nand: "NAND Gate"
         case .jk: "JK Flip-Flop"
         case .inverter: "Schmitt Inverter"
+        case .dualBCD: "Dual BCD Counter"
+        case .dualBinary: "Dual Binary Counter"
         }
     }
 
@@ -35,6 +39,8 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         case .nand: CD4011()
         case .jk: CD4027()
         case .inverter: CD40106()
+        case .dualBCD: DualCounter(.bcd)
+        case .dualBinary: DualCounter(.binary)
         }
     }
 
@@ -48,7 +54,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     var units: [ChipUnit] {
         switch self {
         case .and, .nand: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
-        case .jk: [ChipUnit(id: 1, pinNumbers: Array(1...7)), ChipUnit(id: 2, pinNumbers: Array(9...15))]
+        case .jk, .dualBCD, .dualBinary: [ChipUnit(id: 1, pinNumbers: Array(1...7)), ChipUnit(id: 2, pinNumbers: Array(9...15))]
         case .inverter:
             CD40106.gatePins.enumerated().map { index, pair in
                 ChipUnit(id: index + 1, pinNumbers: [pair.0, pair.1].sorted())
@@ -398,7 +404,7 @@ final class Workbench {
 
     private func insertPart(_ name: String, component: any LogicComponent, unitPlacement: ChipUnitPlacement?) {
         let chipNumber: Int?
-        if component is CD4510 || component is CD4060 || component is SevenSegmentDriver || component is MAN74A {
+        if (component is any PoweredChip && unitPlacement == nil) || component is SevenSegmentDisplay {
             chipNumber = nextChipNumber
             nextChipNumber += 1
         } else {
