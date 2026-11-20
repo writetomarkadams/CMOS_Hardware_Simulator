@@ -42,6 +42,32 @@ final class SimulationEngine {
         let second: Int
     }
 
+    private let timing = NE555TimingSystem()
+    var hasTimingNetworks: Bool { !timing.networks.isEmpty }
+
+    struct TimeAdvance {
+        let elapsed: Double
+        let stable: Bool
+    }
+
+    /// Advance to each RC comparator crossing and settle downstream logic at every edge.
+    /// A bounded batch returns elapsed time so the caller retains unprocessed time.
+    func advanceTime(by seconds: Double, maximumEvents: Int = 256) -> TimeAdvance {
+        guard seconds.isFinite, seconds >= 0, maximumEvents > 0 else { return TimeAdvance(elapsed: 0, stable: false) }
+        var stable = settle()
+        var elapsed = 0.0
+        for _ in 0..<maximumEvents {
+            let remaining = seconds - elapsed
+            if remaining <= 0 { break }
+            let step = min(remaining, timing.nextEventDelay)
+            timing.integrate(step)
+            elapsed += step
+            stable = settle() && stable
+            if step == remaining { break }
+        }
+        return TimeAdvance(elapsed: elapsed, stable: stable)
+    }
+
     private var switches: [any SwitchedConnectivity] = []
 
 
@@ -95,6 +121,7 @@ final class SimulationEngine {
 
         var links: [NetLink] = []
         resolve(electricalNets, links: links)
+        timing.configure(components: components, nets: nets, automaticPower: automaticallyPowerChips)
         for _ in 0..<maximumIterations {
             let nextLinks = switches.flatMap { device -> [NetLink] in
                 guard automaticallyPowerChips || device.powerState == .powered else { return [] }
@@ -111,6 +138,7 @@ final class SimulationEngine {
             for index in drivenPins.indices {
                 previousStates[index] = drivenPins[index].driveState
             }
+            timing.prepareInputs()
             for component in components {
                 if let chip = component as? any PoweredChip, !automaticallyPowerChips, chip.powerState != .powered {
                     if unpoweredChips.insert(ObjectIdentifier(chip)).inserted {

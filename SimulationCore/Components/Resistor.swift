@@ -32,7 +32,14 @@ final class Resistor: LogicComponent, Identifiable {
         self.unit = unit
     }
 
+    var isTimingElement = false
+
     func evaluate() {
+        if isTimingElement {
+            pins[1]!.drive(.highImpedance)
+            pins[2]!.drive(.highImpedance)
+            return
+        }
         // Sample direct drivers only so the resistor cannot feed its own weak output back.
         pins[1]!.drive(pins[2]!.strongState)
         pins[2]!.drive(pins[1]!.strongState)

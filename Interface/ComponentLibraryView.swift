@@ -20,7 +20,8 @@ struct ComponentLibraryView: View {
         case power(PowerRail)
         case additionalCounter(CounterChip)
         case analogSwitch(AnalogSwitchKind)
-        case counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, led, pullUp
+        case capacitor(CapacitorKind)
+        case timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, led, pullUp
 
         var id: Self { self }
 
@@ -28,6 +29,7 @@ struct ComponentLibraryView: View {
             switch self {
             case .chip(let kind): kind.partName
             case .chipPower(let kind, let package): "\(kind.partName) U\(package)\(kind.powerUnit.letter)"
+            case .timer555: "NE555"
             case .counter: "CD4510"
             case .additionalCounter(let kind): kind.rawValue
             case .analogSwitch(let kind): kind.rawValue
@@ -36,6 +38,7 @@ struct ComponentLibraryView: View {
             case .commonAnodeDisplay: "MAN72A"
             case .rippleCounter: "CD4060"
             case .transistor: "2N3904"
+            case .capacitor(let kind): kind.rawValue
             case .resistor: "R_Small"
             case .diode: "1N4148"
             case .pullUp: "Logic Pull-up"
@@ -51,6 +54,7 @@ struct ComponentLibraryView: View {
             switch self {
             case .chip(let kind): kind.unitName
             case .chipPower: "Shared Power Unit · VDD / VSS"
+            case .timer555: "Timer · Digital inputs or standard RC astable/monostable"
             case .counter: "BCD Up/Down Counter"
             case .additionalCounter(let kind): kind.detail
             case .analogSwitch(let kind): kind.detail
@@ -59,6 +63,7 @@ struct ComponentLibraryView: View {
             case .commonAnodeDisplay: "Single Digit LED Display · Common Anode"
             case .rippleCounter: "14-stage Binary Counter"
             case .transistor: "NPN Transistor (Digital Switch)"
+            case .capacitor(let kind): "Capacitor · \(kind.unit) · NE555 RC timing"
             case .resistor: "Resistor"
             case .diode: "Switching Diode"
             case .pullUp: "Weak HIGH for open-collector outputs"
@@ -73,9 +78,9 @@ struct ComponentLibraryView: View {
 
         var icon: String {
             switch self {
-            case .chip, .chipPower, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
+            case .chip, .chipPower, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
             case .transistor: "circle.branch"
-            case .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
+            case .capacitor, .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
             case .pullUp, .power(.fiveVolts): "arrow.up"
             case .power(.ground): "arrow.down"
             case .logicSwitch: "switch.2"
@@ -95,7 +100,7 @@ struct ComponentLibraryView: View {
     }
 
     private var chips: [Entry] {
-        (MultiUnitChip.allCases.map(Entry.chip) + [.counter, .rippleCounter]
+        (MultiUnitChip.allCases.map(Entry.chip) + [.timer555, .counter, .rippleCounter]
             + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
             + CounterChip.allCases.map(Entry.additionalCounter)
             + AnalogSwitchKind.allCases.map(Entry.analogSwitch)
@@ -109,7 +114,7 @@ struct ComponentLibraryView: View {
     }
 
     private var discreteComponents: [Entry] {
-        [Entry.transistor, .resistor, .diode].filter { $0.matches(search) }
+        [Entry.transistor, .resistor, .diode, .capacitor(.polarized), .capacitor(.small)].filter { $0.matches(search) }
     }
 
     private var sourcesAndIndicators: [Entry] {
@@ -203,6 +208,8 @@ struct ComponentLibraryView: View {
             bench.add(kind.rawValue, component: AnalogSwitch(kind))
         case .additionalCounter(let kind):
             bench.add(kind.rawValue, component: kind.makeComponent())
+        case .timer555:
+            bench.add("NE555", component: NE555())
         case .counter:
             bench.add("CD4510", component: CD4510())
         case .rippleCounter:
@@ -215,6 +222,8 @@ struct ComponentLibraryView: View {
             bench.add("MAN72A", component: MAN72A())
         case .transistor:
             bench.add("2N3904", component: NPN2N3904())
+        case .capacitor(let kind):
+            bench.add(kind.rawValue, component: Capacitor(kind))
         case .resistor:
             bench.add("Resistor", component: Resistor())
         case .diode:

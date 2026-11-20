@@ -29,6 +29,7 @@ struct WorkbenchView: View {
     @State private var exportArchive: WorkbenchArchive?
     @State private var fileError: String?
     @State private var editingResistance: Resistor?
+    @State private var editingCapacitance: Capacitor?
     @State private var canvasOffset: CGPoint = .zero
     @State private var viewportSize: CGSize = .zero
     @State private var occupiedBounds: [Int: CGRect] = [:]
@@ -53,49 +54,18 @@ struct WorkbenchView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button("Add Part…", systemImage: "plus") { showingLibrary = true }
-                    .keyboardShortcut("a", modifiers: [])
-                    .help("Open the component library (A)")
-                    .disabled(showingLibrary)
-                Button("Rotate", systemImage: "rotate.right") {
-                    if selectedParts.count == 1, let id = selectedParts.first {
-                        rotationAction(for: id)(1)
-                    }
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 16) {
+                    editingControls
+                    fileControls
                 }
-                .keyboardShortcut("r", modifiers: .command)
-                .help("Rotate the selected component 90° clockwise (⌘R)")
-                .disabled(selectedParts.count != 1 || showingLibrary || editingResistance != nil)
-
-                Button("Undo", systemImage: "arrow.uturn.backward") { bench.undo() }
-                    .keyboardShortcut("z", modifiers: .command)
-                    .disabled(!bench.canUndo || showingLibrary || editingResistance != nil)
-                Button("Redo", systemImage: "arrow.uturn.forward") { bench.redo() }
-                    .keyboardShortcut("z", modifiers: [.command, .shift])
-                    .disabled(!bench.canRedo || showingLibrary || editingResistance != nil)
-
-                Picker("Power", selection: Binding(
-                    get: { bench.powerMode }, set: { bench.setPowerMode($0) }
-                )) {
-                    ForEach(PowerMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                .fixedSize(horizontal: true, vertical: false)
+                VStack(alignment: .leading, spacing: 10) {
+                    editingControls
+                    fileControls
                 }
-                .fixedSize()
-                .help("Automatic assumes a 5 V supply. Explicit requires wired supply rails.")
-                Spacer()
-                Button("Open…", systemImage: "folder") { openingFile = true }
-                    .labelStyle(.iconOnly)
-                    .help("Open Workbench File (⌘O)")
-                    .keyboardShortcut("o", modifiers: .command)
-                Button("Save…", systemImage: "square.and.arrow.down", action: saveCircuit)
-                    .labelStyle(.iconOnly)
-                    .help("Save Workbench File (⌘S)")
-                    .keyboardShortcut("s", modifiers: .command)
-                Button("Clear Workbench") {
-                    bench.clear()
-                    selectedParts.removeAll()
-                }
-                .disabled(bench.parts.isEmpty)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
 
             Divider()
@@ -199,6 +169,10 @@ struct WorkbenchView: View {
             }
         }
         .frame(minWidth: 680, minHeight: 460)
+        .focusedSceneValue(\.workbenchFiles, WorkbenchFileActions(
+            open: { openingFile = true }, save: saveCircuit,
+            isEnabled: !showingLibrary && editingResistance == nil && editingCapacitance == nil && !openingFile && !savingFile
+        ))
         .task(id: bench.hasRunningClocks) {
             guard bench.hasRunningClocks else { return }
             let clock = ContinuousClock()
@@ -212,7 +186,7 @@ struct WorkbenchView: View {
                 }
             }
         }
-        .fileImporter(isPresented: $openingFile, allowedContentTypes: [.json], onCompletion: openCircuit)
+        .fileImporter(isPresented: $openingFile, allowedContentTypes: [.json, .data], onCompletion: openCircuit)
         .fileExporter(isPresented: $savingFile, document: exportArchive,
                       contentType: .json, defaultFilename: "Circuit.json") { result in
             if case .failure(let error) = result { fileError = error.localizedDescription }
@@ -228,6 +202,11 @@ struct WorkbenchView: View {
         .sheet(isPresented: $showingLibrary) {
             ComponentLibraryView(bench: bench, placeNewPart: placeNewPart)
         }
+        .sheet(item: $editingCapacitance) { capacitor in
+            CapacitanceEditor(capacitor: capacitor) { value in
+                bench.setCapacitance(value, for: capacitor)
+            }
+        }
         .sheet(item: $editingResistance) { resistor in
             ResistanceEditor(resistor: resistor) { value, unit in
                 bench.setResistance(value, unit: unit, for: resistor)
@@ -241,6 +220,53 @@ struct WorkbenchView: View {
             }
         }
     }
+
+    private var editingControls: some View {
+        HStack {
+            Button("Add Part…", systemImage: "plus") { showingLibrary = true }
+                .keyboardShortcut("a", modifiers: [])
+                .help("Open the component library (A)")
+                .disabled(showingLibrary)
+            Button("Rotate", systemImage: "rotate.right") {
+                if selectedParts.count == 1, let id = selectedParts.first {
+                    rotationAction(for: id)(1)
+                }
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .help("Rotate the selected component 90° clockwise (⌘R)")
+            .disabled(selectedParts.count != 1 || showingLibrary || editingResistance != nil || editingCapacitance != nil)
+
+            Button("Undo", systemImage: "arrow.uturn.backward") { bench.undo() }
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!bench.canUndo || showingLibrary || editingResistance != nil || editingCapacitance != nil)
+            Button("Redo", systemImage: "arrow.uturn.forward") { bench.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(!bench.canRedo || showingLibrary || editingResistance != nil || editingCapacitance != nil)
+
+            Picker("Power", selection: Binding(
+                get: { bench.powerMode }, set: { bench.setPowerMode($0) }
+            )) {
+                ForEach(PowerMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+            }
+            .fixedSize()
+            .help("Automatic assumes a 5 V supply. Explicit requires wired supply rails.")
+        }
+    }
+
+    private var fileControls: some View {
+        HStack {
+            Button("Open…", systemImage: "folder") { openingFile = true }
+                .help("Open Workbench File (⌘O)")
+            Button("Save…", systemImage: "square.and.arrow.down", action: saveCircuit)
+                .help("Save Workbench File (⌘S)")
+            Button("Clear Workbench") {
+                bench.clear()
+                selectedParts.removeAll()
+            }
+            .disabled(bench.parts.isEmpty)
+        }
+    }
+
 
     private func saveCircuit() {
         do {
@@ -543,6 +569,9 @@ struct WorkbenchView: View {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if let device = part.component as? AnalogSwitch, let symbol = KiCadSymbol.analogSwitches[device.kind] {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+            } else if part.component is NE555, let symbol = KiCadSymbol.ne555 {
+                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+                    .help("NE555: digital inputs or standard RC astable/monostable wiring. CONT may be open or bypassed to GND.")
             } else if part.component is CD4510, let symbol = KiCadSymbol.counter {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is CD4060, let symbol = KiCadSymbol.counter4060 {
@@ -555,6 +584,8 @@ struct WorkbenchView: View {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is NPN2N3904, let symbol = KiCadSymbol.npn2N3904 {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+            } else if let capacitor = part.component as? Capacitor, let symbol = KiCadSymbol.capacitors[capacitor.kind] {
+                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate, editCapacitance: { editingCapacitance = capacitor })
             } else if let resistor = part.component as? Resistor, let symbol = KiCadSymbol.smallResistor {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench,
                                     isSelected: isSelected, select: select, rotate: rotate, editResistance: { editingResistance = resistor })
@@ -577,6 +608,9 @@ struct WorkbenchView: View {
                     .onTapGesture(perform: select)
                     .contextMenu {
                         PartRotationCommands(rotate: rotate)
+                        if let capacitor = part.component as? Capacitor {
+                            Button("Set Capacitance…") { editingCapacitance = capacitor }
+                        }
                         if let resistor = part.component as? Resistor {
                             Button("Set Resistance…") { editingResistance = resistor }
                         }
@@ -590,10 +624,10 @@ struct WorkbenchView: View {
             }
         }
         .overlay(alignment: .topTrailing) {
-            if let warning = bench.powerStates[part.id]?.warning {
+            if let warning = bench.powerStates[part.id]?.warning ?? bench.timingIssues[part.id] {
                 Image(systemName: "exclamationmark.triangle.fill")
                     .foregroundStyle(.orange)
-                    .help(warning + " — connect VDD to +5V and VSS to GND.")
+                    .help(warning)
                     .accessibilityLabel(warning)
             }
         }

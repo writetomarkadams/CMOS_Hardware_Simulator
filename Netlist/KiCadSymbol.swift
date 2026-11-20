@@ -27,6 +27,7 @@ struct KiCadSymbol {
     let gateOutline: GateOutline?
     let polygon: [CGPoint]
     let markings: [[CGPoint]]
+    let filledMarkings: [[CGPoint]]
     let terminals: [Terminal]
 
     private static let installedLibrary: KiCadExpression? = {
@@ -56,6 +57,30 @@ struct KiCadSymbol {
         return Self(pins: elements, body: body, isCircular: true, markings: markings,
                     pinNumbers: [1, 2, 3])
     }()
+
+    static let capacitors: [CapacitorKind: Self] = Dictionary(uniqueKeysWithValues:
+        CapacitorKind.allCases.compactMap { kind -> (CapacitorKind, Self)? in
+            guard let elements = deviceElements(kind.rawValue, library: "Device") else { return nil }
+            var markings = elements.filter { $0[0] == "polyline" }.compactMap {
+                $0.child("pts")?.children.compactMap(\.point)
+            }
+            var filledMarkings: [[CGPoint]] = []
+            for rectangle in elements where rectangle[0] == "rectangle" {
+                if let a = rectangle.child("start")?.point, let b = rectangle.child("end")?.point {
+                    let plate = [a, CGPoint(x: b.x, y: a.y), b, CGPoint(x: a.x, y: b.y), a]
+                    markings.append(plate)
+                    if rectangle.child("fill")?.child("type")?[1] == "outline" {
+                        filledMarkings.append(plate)
+                    }
+                }
+            }
+            let points = markings.flatMap { $0 }
+            guard let left = points.map(\.x).min(), let right = points.map(\.x).max(),
+                  let top = points.map(\.y).min(), let bottom = points.map(\.y).max(),
+                  let symbol = Self(pins: elements, body: CGRect(x: left, y: top, width: right-left, height: bottom-top),
+                                    markings: markings, filledMarkings: filledMarkings, pinNumbers: [1, 2]) else { return nil }
+            return (kind, symbol)
+        })
 
     static let smallResistor: Self? = {
         guard let elements = deviceElements("R_Small", library: "Device"),
@@ -130,6 +155,7 @@ struct KiCadSymbol {
         gateOutline = nil
         polygon = []
         markings = []
+        filledMarkings = []
     }
 
     private static func counterSymbol(_ chip: any PoweredChip) -> Self {
@@ -161,6 +187,10 @@ struct KiCadSymbol {
                                   position: CGPoint(x: 0, y: 20.32), inward: CGVector(dx: 0, dy: -1), length: 5.08))
         return Self(body: CGRect(x: -7.62, y: -15.24, width: 15.24, height: 30.48), terminals: terminals)
     }
+
+    static let ne555 = rectangularSymbol(
+        elements: deviceElements("NE555P", library: "Timer"), pinNumbers: Array(1...8)
+    )
 
     static let counter = rectangularSymbol(
         elements: installedSymbol("4510")?.children.flatMap(\.children),
@@ -219,9 +249,37 @@ struct KiCadSymbol {
             let name = "\(kind.rawValue)_\(unit.id)_\(style)"
             guard let expression = symbol.children.first(where: { $0[0] == "symbol" && $0[1] == name })
             else { continue }
-            units[unit.id] = loadUnit(expression, pinNumbers: unit.pinNumbers)
+            units[unit.id] = kind == .or
+                ? loadORUnit(expression, pinNumbers: unit.pinNumbers)
+                : loadUnit(expression, pinNumbers: unit.pinNumbers)
         }
         return units
+    }
+
+    private static func loadORUnit(_ expression: KiCadExpression, pinNumbers: [Int]) -> Self? {
+        // KiCad supplies the concave input face as a polyline and the output face as two arcs.
+        let polylines = expression.children.filter { $0[0] == "polyline" }.compactMap {
+            $0.child("pts")?.children.compactMap(\.point)
+        }
+        guard var outline = polylines.max(by: { $0.count < $1.count }) else { return nil }
+        for arc in expression.children.filter({ $0[0] == "arc" }).dropFirst() {
+            guard let start = arc.child("end")?.point,
+                  let mid = arc.child("mid")?.point,
+                  let end = arc.child("start")?.point else { return nil }
+            let control = CGPoint(x: 2 * mid.x - (start.x + end.x) / 2,
+                                  y: 2 * mid.y - (start.y + end.y) / 2)
+            for step in 0...24 {
+                let t = CGFloat(step) / 24
+                let u = 1 - t
+                outline.append(CGPoint(x: u * u * start.x + 2 * u * t * control.x + t * t * end.x,
+                                       y: u * u * start.y + 2 * u * t * control.y + t * t * end.y))
+            }
+        }
+        guard let left = outline.map(\.x).min(), let right = outline.map(\.x).max(),
+              let top = outline.map(\.y).min(), let bottom = outline.map(\.y).max() else { return nil }
+        return Self(pins: expression.children,
+                    body: CGRect(x: left, y: top, width: right - left, height: bottom - top),
+                    polygon: outline, pinNumbers: pinNumbers)
     }
 
     private static func loadUnit(_ expression: KiCadExpression, pinNumbers: [Int]) -> Self? {
@@ -259,12 +317,13 @@ struct KiCadSymbol {
     }
 
     private init?(pins: [KiCadExpression], body: CGRect, isCircular: Bool = false, gateOutline: GateOutline? = nil,
-                  polygon: [CGPoint] = [], markings: [[CGPoint]] = [], pinNumbers: [Int]) {
+                  polygon: [CGPoint] = [], markings: [[CGPoint]] = [], filledMarkings: [[CGPoint]] = [], pinNumbers: [Int]) {
         self.body = body
         self.isCircular = isCircular
         self.gateOutline = gateOutline
         self.polygon = polygon
         self.markings = markings
+        self.filledMarkings = filledMarkings
         terminals = pins.filter { $0[0] == "pin" }.compactMap { pin in
             guard let number = pin.child("number")?[1].flatMap(Int.init),
                   let name = pin.child("name")?[1],

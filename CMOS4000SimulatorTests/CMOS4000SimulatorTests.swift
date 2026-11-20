@@ -698,7 +698,7 @@ extension WorkbenchTests {
         }
     }
 
-    @Test("Quad gate units share a package and expose distinct physical pins", arguments: [MultiUnitChip.and, .nand])
+    @Test("Quad gate units share a package and expose distinct physical pins", arguments: [MultiUnitChip.and, .nand, .or])
     func individuallyPlacedGates(kind: MultiUnitChip) throws {
         let bench = Workbench()
         bench.addUnit(kind.units[0], kind: kind)

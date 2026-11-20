@@ -14,6 +14,7 @@ struct WorkbenchTerminal: Hashable, Codable {
 enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     case and = "4081"
     case nand = "4011"
+    case or = "4071"
     case jk = "4027"
     case inverter = "40106"
     case dualBCD = "4518"
@@ -26,6 +27,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .and: "AND Gate"
         case .nand: "NAND Gate"
+        case .or: "OR Gate"
         case .jk: "JK Flip-Flop"
         case .inverter: "Schmitt Inverter"
         case .dualBCD: "Dual BCD Counter"
@@ -37,6 +39,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         switch self {
         case .and: CD4081()
         case .nand: CD4011()
+        case .or: CD4071()
         case .jk: CD4027()
         case .inverter: CD40106()
         case .dualBCD: DualCounter(.bcd)
@@ -53,7 +56,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
 
     var units: [ChipUnit] {
         switch self {
-        case .and, .nand: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
+        case .and, .nand, .or: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
         case .jk, .dualBCD, .dualBinary: [ChipUnit(id: 1, pinNumbers: Array(1...7)), ChipUnit(id: 2, pinNumbers: Array(9...15))]
         case .inverter:
             CD40106.gatePins.enumerated().map { index, pair in
@@ -88,6 +91,7 @@ struct WorkbenchPart: Identifiable {
     let chipNumber: Int?
 
     var reference: String? {
+        if component is Capacitor { return "C\(id)" }
         if component is Resistor { return "R\(id)" }
         if component is Diode1N4148 { return "D\(id)" }
         if component is NPN2N3904 { return "Q\(id)" }
@@ -217,13 +221,18 @@ final class Workbench {
     }
 
     private let clockOrigin = DispatchTime.now().uptimeNanoseconds
+    @ObservationIgnored private let timeSource: (() -> Double)?
+
+    init(timeSource: (() -> Double)? = nil) { self.timeSource = timeSource }
     @ObservationIgnored private var runningClocks: [RunningClock] = []
     private(set) var hasRunningClocks = false
     private(set) var clockIsBehind = false
 
     private var clockTime: Double {
-        Double(DispatchTime.now().uptimeNanoseconds - clockOrigin) / 1_000_000_000
+        timeSource?() ?? (Double(DispatchTime.now().uptimeNanoseconds - clockOrigin) / 1_000_000_000)
     }
+    private(set) var servicedTime = 0.0
+    private(set) var timingIssues: [Int: String] = [:]
     private var nextPartID = 1
     private var nextChipNumber = 1
     private var nextWireID = 1
@@ -244,6 +253,7 @@ final class Workbench {
         let clockFrequencies: [Int: ClockFrequency]
         let ledColours: [Int: LEDIndicatorSymbol.LampColour]
         let resistances: [(Resistor, Double, ResistanceUnit)]
+        let capacitances: [(Capacitor, Double)]
         let nextPartID: Int
         let nextChipNumber: Int
         let nextWireID: Int
@@ -260,6 +270,10 @@ final class Workbench {
              resistances: parts.compactMap { part in
                  guard let resistor = part.component as? Resistor else { return nil }
                  return (resistor, resistor.value, resistor.unit)
+             },
+             capacitances: parts.compactMap { part in
+                 guard let capacitor = part.component as? Capacitor else { return nil }
+                 return (capacitor, capacitor.value)
              },
              nextPartID: nextPartID, nextChipNumber: nextChipNumber, nextWireID: nextWireID)
     }
@@ -297,6 +311,7 @@ final class Workbench {
         for (resistor, value, unit) in edit.resistances {
             resistor.setResistance(value, unit: unit)
         }
+        for (capacitor, value) in edit.capacitances { capacitor.setCapacitance(value) }
         nextPartID = edit.nextPartID
         nextChipNumber = edit.nextChipNumber
         nextWireID = edit.nextWireID
@@ -344,6 +359,14 @@ final class Workbench {
         guard value != resistor.value || unit != resistor.unit else { return }
         recordEdit()
         resistor.setResistance(value, unit: unit)
+        settle()
+    }
+
+    func setCapacitance(_ value: Double, for capacitor: Capacitor) {
+        guard Capacitor.isValid(value, kind: capacitor.kind), value != capacitor.value else { return }
+        recordEdit()
+        capacitor.setCapacitance(value)
+        settle()
     }
 
     func packages(for kind: MultiUnitChip) -> [Int] {
@@ -556,24 +579,35 @@ final class Workbench {
     }
 
     func serviceClocks() {
-        let now = clockTime
-        let budgetDeadline = now + 0.012
-        var edgeCount = 0
+        serviceSimulation(until: clockTime)
+    }
+
+    // A deterministic entry point also allows tests to verify elapsed-time scheduling.
+    func serviceSimulation(until now: Double) {
+        guard now.isFinite, now >= servicedTime else { return }
+        let budgetDeadline = clockTime + 0.012
         var stable = true
-        while let index = runningClocks.indices.min(by: { runningClocks[$0].nextEdge < runningClocks[$1].nextEdge }),
-              runningClocks[index].nextEdge <= now {
-            runningClocks[index].source.advance()
-            runningClocks[index].edgesDelivered += 1
-            stable = engine.settle() && stable
-            edgeCount += 1
-            // Leave time for the UI and retain every unprocessed edge for the next batch.
-            if edgeCount.isMultiple(of: 32), clockTime >= budgetDeadline { break }
+        var batches = 0
+        while servicedTime < now {
+            let index = runningClocks.indices.min { runningClocks[$0].nextEdge < runningClocks[$1].nextEdge }
+            let target = min(now, index.map { max(servicedTime, runningClocks[$0].nextEdge) } ?? now)
+            let advance = engine.hasTimingNetworks
+                ? engine.advanceTime(by: target - servicedTime, maximumEvents: 32)
+                : SimulationEngine.TimeAdvance(elapsed: target - servicedTime, stable: true)
+            servicedTime += advance.elapsed
+            stable = advance.stable && stable
+            if servicedTime >= target, let index, runningClocks[index].nextEdge <= servicedTime {
+                runningClocks[index].source.advance()
+                runningClocks[index].edgesDelivered += 1
+                stable = engine.settle() && stable
+            }
+            batches += 1
+            if batches >= 1 && clockTime >= budgetDeadline { break }
+            if advance.elapsed == 0 && target > servicedTime { break }
         }
-        if edgeCount > 0 {
-            isStable = stable
-            publishReadings()
-        }
-        let behind = runningClocks.contains { $0.nextEdge < now - 0.1 }
+        isStable = stable
+        publishReadings()
+        let behind = now - servicedTime > 0.1
         if behind != clockIsBehind { clockIsBehind = behind }
     }
 
@@ -587,7 +621,8 @@ final class Workbench {
     }
 
     private func updateClockStatus() {
-        let running = !runningClocks.isEmpty
+        let running = !runningClocks.isEmpty || engine.hasTimingNetworks
+        if running && !hasRunningClocks { servicedTime = clockTime }
         if running != hasRunningClocks { hasRunningClocks = running }
         if !running && clockIsBehind { clockIsBehind = false }
     }
@@ -605,7 +640,7 @@ final class Workbench {
         recordEdit()
         restore(Edit(parts: loaded.parts, powerMode: archive.savedPowerMode, wires: loaded.wires, junctions: archive.junctions,
                      positions: loaded.positions, rotations: loaded.rotations,
-                     clockFrequencies: loaded.frequencies, ledColours: loaded.colours, resistances: [],
+                     clockFrequencies: loaded.frequencies, ledColours: loaded.colours, resistances: [], capacitances: [],
                      nextPartID: (loaded.parts.map(\.id).max() ?? 0) + 1,
                      nextChipNumber: loaded.nextChipNumber,
                      nextWireID: (archive.wires.map(\.id) + Array(archive.junctions.keys)).max().map { $0 + 1 } ?? 1))
@@ -619,6 +654,7 @@ final class Workbench {
     }
 
     private func rebuildNets() {
+        servicedTime = clockTime
         engine = SimulationEngine()
         engine.automaticallyPowerChips = powerMode == .automatic
         var registered: Set<ObjectIdentifier> = []
@@ -656,10 +692,16 @@ final class Workbench {
 
     private func settle() {
         isStable = engine.settle()
+        updateClockStatus()
         publishReadings()
     }
 
     private func publishReadings() {
+        let issues = Dictionary(uniqueKeysWithValues: parts.compactMap { part -> (Int, String)? in
+            guard let timer = part.component as? NE555, let issue = timer.timingIssue else { return nil }
+            return (part.id, issue)
+        })
+        if issues != timingIssues { timingIssues = issues }
         let power = Dictionary(uniqueKeysWithValues: parts.compactMap { part -> (Int, ChipPowerState)? in
             guard let chip = part.component as? any PoweredChip else { return nil }
             return (part.id, powerMode == .automatic ? .powered : chip.powerState)

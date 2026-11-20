@@ -15,24 +15,27 @@ struct SchematicSymbolView: View {
     let select: () -> Void
     let rotate: (Int) -> Void
     var editResistance: (() -> Void)? = nil
+    var editCapacitance: (() -> Void)? = nil
+    private var capacitor: Capacitor? { part.component as? Capacitor }
 
     private var resistor: Resistor? { part.component as? Resistor }
     private var display: SevenSegmentDisplay? { part.component as? SevenSegmentDisplay }
     private var isDiode: Bool { part.component is Diode1N4148 }
-    private var isDiscrete: Bool { symbol.isCircular || resistor != nil || isDiode }
+    private var isDiscrete: Bool { symbol.isCircular || resistor != nil || capacitor != nil || isDiode }
 
     private var valueLabel: String {
+        if let capacitor { return "\(capacitor.value.formatted()) \(capacitor.kind.unit)" }
         if let resistor {
             return "\(resistor.value.formatted()) \(resistor.unit.rawValue)"
         }
-        if part.component is AnalogSwitch || CounterChip.kind(of: part.component) != nil || part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
+        if part.component is NE555 || part.component is AnalogSwitch || CounterChip.kind(of: part.component) != nil || part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
             return part.name
         }
         return isDiscrete ? part.name : part.unitPlacement?.kind.rawValue ?? "4510"
     }
 
     private var labelPosition: CGPoint {
-        if resistor != nil || symbol.isCircular {
+        if resistor != nil || capacitor != nil || symbol.isCircular {
             return CGPoint(x: bodyCenter.x + 42, y: bodyCenter.y)
         }
         if isDiode || display != nil || !symbol.polygon.isEmpty {
@@ -71,9 +74,15 @@ struct SchematicSymbolView: View {
                 } else if !isDiscrete {
                     context.fill(outlinePath, with: .color(bodyFill))
                 }
-                context.stroke(outlinePath, with: .color(outline), lineWidth: 1.2)
+                if capacitor == nil { context.stroke(outlinePath, with: .color(outline), lineWidth: 1.2) }
                 if let display {
                     drawSegments(of: display, in: context)
+                }
+                for marking in symbol.filledMarkings {
+                    var path = Path()
+                    path.addLines(marking.map(point))
+                    path.closeSubpath()
+                    context.fill(path, with: .color(isDiscrete ? outline : labelInk))
                 }
                 for marking in display == nil ? symbol.markings : [] {
                     var path = Path()
@@ -97,6 +106,9 @@ struct SchematicSymbolView: View {
                 .onTapGesture(perform: select)
                 .contextMenu {
                     PartRotationCommands(rotate: rotate)
+                    if let editCapacitance {
+                        Button("Set Capacitance…", action: editCapacitance)
+                    }
                     if let editResistance {
                         Button("Set Resistance…", action: editResistance)
                     }
@@ -118,7 +130,7 @@ struct SchematicSymbolView: View {
                 terminal(pin)
             }
         }
-        .frame(width: bounds.width * scale + 2 * padding + (symbol.isCircular || resistor != nil ? 85 : 0),
+        .frame(width: bounds.width * scale + 2 * padding + (symbol.isCircular || resistor != nil || capacitor != nil ? 85 : 0),
                height: bounds.height * scale + 2 * padding)
     }
 
@@ -200,7 +212,7 @@ struct SchematicSymbolView: View {
                           y: inner.y + pin.inward.dy * 9)
                 .accessibilityHidden(true)
 
-            Text(resistor == nil ? pin.id.formatted() : "")
+            Text(resistor == nil && capacitor == nil ? pin.id.formatted() : "")
                 .font(.system(size: 8, design: .monospaced))
                 .foregroundStyle(outline)
                 .allowsHitTesting(false)

@@ -4,7 +4,7 @@
 **Platform:** macOS / SwiftUI / Xcode  
 **Repository:** https://github.com/writetomarkadams/CMOS_Hardware_Simulator  
 **Branch:** main  
-**Last updated:** 19 November 2026  
+**Last updated:** 20 November 2026\
 **Project root:** /Users/mark.adams/Documents/GitHub/CMOS_Hardware_Simulator
 
 Use this project root for all development. Leave the previous project location untouched.
@@ -23,12 +23,16 @@ The application opens directly into the Circuit Workbench. Users can place compo
 - `Netlist/` — KiCad netlist and symbol parsing
 - `SimulationCore/` — Logic states, nets, pins, engine, shared power validation, and components
 - `CMOS4000SimulatorTests/` — Swift Testing suites, including `AdditionalCounterTests.swift`
+- `SimulationCore/NE555Timing.swift` — Standard NE555 RC topology recognition and exact exponential timing
 - `SimulationCore/Components/AdditionalCounters.swift` — CD4017, CD4026, CD4516, and shared CD4518/CD4520 models
 
 ## 3. Implemented Components
 
 | Component | Implemented behaviour |
 |---|---|
+| NE555 | Digital latch plus ideal RC astable/monostable timing, active-LOW RESET, open-collector DISCH |
+| C_Polarized | Polarized capacitor, editable µF value; pin 1 positive / pin 2 negative |
+| C_Small | Non-polarized capacitor, editable nF value |
 | CD40106 | Six digital inverters using Schmitt-trigger symbols |
 | CD4011 | Four NAND gates |
 | CD4027 | Two JK flip-flops, rising-edge clocking, asynchronous SET/RESET |
@@ -37,6 +41,7 @@ The application opens directly into the Circuit Workbench. Users can place compo
 | CD4052 | Two bidirectional 4-channel switches with shared selectors |
 | CD4053 | Three bidirectional 2-channel switches with independent selectors |
 | CD4081 | Four AND gates |
+| CD4071 | Four two-input OR gates, with four-state logic and shared power |
 | CD4510 | BCD up/down counter, preset, RESET, Carry In/Out, cascading |
 | CD4017 | Decade counter, ten decoded outputs, clock inhibit, RESET, divide-by-ten carry |
 | CD4026 | Decade counter, active-HIGH segment outputs, display enable, ungated c, carry |
@@ -62,7 +67,7 @@ The CD4518 and CD4520 count on a rising CLOCK with ENABLE HIGH, or a falling ENA
 - CD4026 and CD4516 were absent from the installed libraries. They use matching rectangular symbols with datasheet-based pinouts.
 - Multi-unit placements share one underlying IC instance and package designator.
 - Duplicate gate/counter units and duplicate power units within a package are prevented.
-- CD4011/CD4081 use A–D logic units and E power. CD4027/CD4518/CD4520 use A/B logic units and C power. CD40106 uses A–F logic units and G power.
+- CD4011/CD4071/CD4081 use A–D logic units and E power. CD4027/CD4518/CD4520 use A/B logic units and C power. CD40106 uses A–F logic units and G power.
 
 ### Display connections
 
@@ -89,9 +94,10 @@ The CD4518 and CD4520 count on a rising CLOCK with ENABLE HIGH, or a falling ENA
 - Clock edges are processed in batches at the requested rate. Pending edges are retained when processing falls behind, and the Workbench displays a slowdown warning.
 - A timed 32,768 Hz → CD4060 → CD4027 check produced approximately one output cycle per second.
 - CXO-DIP8 was replaced by the configurable Clock Source.
-- **⌘S** saves a Workbench JSON file. **⌘O** opens it.
+- Labelled Open and Save buttons remain accessible as the control row wraps in narrower windows. File menu commands act on the focused Workbench window and are disabled while its library, value editor, or file dialog is open.
+- **File → Save… (⌘S)** saves a Workbench JSON file. **File → Open… (⌘O)** opens it. The Open picker also accepts older Workbench files with a non-JSON extension; file contents are validated before replacing the circuit.
 - Files preserve components, package identities, positions, rotations, wires, junctions, switch states, resistance values, LED colours, clock frequencies, and power mode.
-- Clocks reopen paused. Archives store circuit configuration. Sequential state reinitialises when the circuit reopens.
+- Manual Clock Source components reopen paused. Recognised, powered NE555 RC circuits start automatically when reopened. Archives store circuit configuration, not capacitor voltage or running sequential state.
 
 ## 5. Power and Logic Architecture
 
@@ -130,13 +136,31 @@ For these models, restoring power alone does not restore the previous count or f
 
 New files save the selected power mode. Older version-1 files reopen in Explicit Power mode, with gate supply wires migrated to a separate shared power unit.
 
+### NE555 RC timing and capacitor values
+
+- C_Polarized preserves the KiCad + marker, outlined positive plate and filled negative plate. Imported fill metadata follows the symbol when rotated. The rendering correction passed the full macOS Xcode suite.
+- Add C_Polarized (default 10 µF) or C_Small (default 100 nF) from Discrete Components. Right-click → Set Capacitance… opens a text field in the component's fixed unit. Positive finite fractional values are accepted; zero, negative, non-finite and underflowing values are rejected. Values, kinds, wires, positions and rotations survive save/open; value edits support Undo/Redo.
+- Standard astable wiring: RA from +5 V to DISCH (7), RB from DISCH to joined TRIG/THRES (2/6), and the timing capacitor from 2/6 to GND. For C_Polarized use pin 1 at 2/6 and pin 2 at GND. Connect RESET (4) HIGH. In Explicit Power mode also wire VCC (8) to +5 V and GND (1) to GND.
+- Standard monostable wiring: join THRES/DISCH (6/7), connect R from +5 V to that node and C from that node to GND, and drive TRIG (2) externally. Assert RESET LOW once to establish a known idle state, then release it HIGH before triggering.
+- Ideal 5 V RC integration uses the capacitor's exponential voltage and 1/3 and 2/3 supply thresholds. Steady-state astable HIGH time is ln(2)(RA+RB)C and LOW time ln(2)RB*C. Startup from a discharged capacitor has a longer first HIGH pulse: ln(3)(RA+RB)C. Monostable pulse width is ln(3)RC, assuming TRIG is released before timeout. Source: [TI NE555 datasheet](https://www.ti.com/lit/ds/symlink/ne555.pdf).
+- Example tested: RA=10 kΩ, RB=20 kΩ, C=10 µF → startup HIGH ≈329.584 ms, steady HIGH ≈207.944 ms, LOW ≈138.629 ms, frequency ≈2.885 Hz. Monostable R=10 kΩ and C=10 µF gives ≈109.861 ms.
+- The timing solver is separate from chip logic and shared power validation. It recognises the actual nets and R/C values, suppresses the legacy digital weak-drive resistor model only within a recognised timing network, and supplies comparator inputs to NE555. Every output edge settles downstream digital components, including edges between screen updates.
+- Time advances in bounded batches alongside manual clock sources. Unprocessed time remains pending; the existing slowdown indicator reports when processing falls behind. No output pulses are deliberately skipped.
+
 ## 6. Verification and Current Milestone
 
-The macOS Xcode build and full test suite passed on 19 November 2026 after adding CD4051, CD4052, and CD4053.
+The macOS Xcode build and full test suite passed on 20 November 2026 after adding CD4071. The first integration run exposed missing support for its multi-arc KiCad outline; the symbol loader was extended and the rerun passed. The OR-gate symbol was also checked in the running Workbench. A subsequent full test run passed after restoring File menu commands and adaptive file controls. Saving, clearing, and reopening a circuit were verified through the native dialogs.
+
+The capacitor/RC timing addition passed the full suite: 84 test case executions, zero failures. Native UI checks confirmed both KiCad symbols, µF/nF editors, rejection of zero, and saving/clearing/reopening 47 µF and 22 nF capacitors. One initial timing test incorrectly expected five downstream edges after advancing through six; its time interval was corrected. A later mixed-clock test exposed its reliance on wall time after advancing virtual time; the Workbench now accepts an optional test time source, and this regression uses a consistent deterministic clock. All tests passed. Xcode reported only skipped App Intents metadata extraction (no AppIntents dependency).
 
 Coverage includes:
 
+- Capacitor value validation, physical symbols, DC isolation, Undo/Redo, archive validation and round-trip, exponential charge curve, astable startup and steady-state durations, monostable timeout/reset/held trigger, R/C scaling, downstream counting, bounded time batches, power cycling, reversed polarity, unsupported wiring, and automatic Workbench oscillator restart on reopen.
+
+- NE555 four-state controls, reset/trigger priority, latch retention, discharge and weak pull-up, power-loss invalidation/restoration, incorrect rail provenance, downstream X, Automatic Power, KiCad symbol pins, and archive round-trip.
+
 - Logic states, net resolution, gates, and clock-edge detection.
+- CD4071 physical pin mapping, all four gates with LOW/HIGH/X/HIGH-Z inputs, shared package allocation, KiCad symbols, Explicit and Automatic Power, downstream propagation, supply-loss Undo, and save/reopen.
 - CD4510 controls, carry behaviour, and synchronous cascading.
 - CD4027 state loss, restoration with CLK already HIGH, downstream X propagation, and Automatic Power.
 - Shared package allocation, power units, supply validation, Undo, and older-file migration.
@@ -156,12 +180,14 @@ Check commit and push status before switching Macs.
 - Extend power-loss invalidation to CD4510, CD4060, and the CD4511/CD4543 latches.
 - Review CD4510 unknown-control handling and uncertain clock transitions as a separate stage.
 - Review uncertain clock handling across other sequential models. Existing edge detection recognises definite LOW→HIGH and HIGH→LOW transitions.
+- RC simulation is limited to the standard NE555 astable and monostable networks described above. Standalone or arbitrary RC networks, multiple timing capacitors, extra timing-node loads, routing through analog switches, leakage, ESR, tolerances, saturation voltage and general analog node voltages are not modelled. Unsupported timing wiring produces an orange warning and X (except asserted RESET still forces LOW).
+- Leave CONT open or bypass it to GND with a capacitor. Externally driven control voltages remain unsupported and produce X unless RESET is asserted. C_Small may be reversed; reversed C_Polarized timing capacitors are rejected. Timing resistor supply and capacitor reference connections require actual +5 V/GND rail sources, even in Automatic Power mode.
+- Recognised timing capacitors start at 0 V after circuit rewiring/reopening or power restoration; retained real-world charge is not modelled. Value edits preserve the current ideal voltage. RC timing-node voltages are used internally by the timer, not exported as general analog pin readings. Capacitors otherwise remain open circuits in digital simulation.
 - CD4060 supports an external digital clock. Its RC/crystal oscillator circuitry is not simulated.
 - CD40106 uses digital inversion and does not model analog Schmitt thresholds or hysteresis.
 - Resistors, diodes, and transistors use simplified digital models. Analog voltages, currents, propagation delays, leakage, and back-powering remain future work.
 - Automatic supply voltage is currently fixed at 5 V.
 - High requested clock rates can exceed real-time processing capacity in larger circuits.
-- Add the CD4071 OR gates required by the reference clock circuit.
 - Build and verify the complete 12/24-hour clock incrementally against the reference KiCad schematic.
 - Expand KiCad import support. Parsing infrastructure exists, but general schematic-to-Workbench import is not complete.
 - Track user-reported editing and simulation issues as circuits become more complex.
@@ -191,7 +217,7 @@ Push changes before switching computers and pull before editing on the other Mac
 
 ## 9. Current Session / Handoff Notes
 
-**Last confirmed milestone:** CD4051, CD4052, and CD4053 are integrated as bidirectional digital switches, with library entries, symbols, power handling, and save/open support. Full Xcode tests passed.
+**Last confirmed milestone:** C_Polarized and C_Small have editable µF/nF values, KiCad symbols, Undo/Redo and archive support. NE555 now recognises standard RC astable/monostable wiring and runs automatically from actual R/C values. Full suite: 84 passing test case executions; native capacitor editing and Save/Open checked. The current analog scope and startup/power-cycle assumptions are documented above.
 
 **Suggested next task:** Continue sequential power-loss handling with CD4510, keeping its unknown-input and clock-transition work in a clearly scoped stage.
 

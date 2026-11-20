@@ -4,11 +4,12 @@ import UniformTypeIdentifiers
 struct WorkbenchArchive: Codable, FileDocument {
     private enum Component: Codable {
         case unit(MultiUnitChip, package: Int, unit: Int)
-        case counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
+        case timer555, counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
         case driver(SevenSegmentDriverKind)
         case additionalCounter(CounterChip)
         case analogSwitch(AnalogSwitchKind)
         case resistance(Double, ResistanceUnit)
+        case capacitance(CapacitorKind, Double)
         case power(PowerRail)
         case switchInput(showsValue: Bool, isOn: Bool)
 
@@ -23,6 +24,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             }
             switch part.component {
             case let device as AnalogSwitch: self = .analogSwitch(device.kind)
+            case is NE555: self = .timer555
             case is CD4510: self = .counter
             case is CD4060: self = .divider
             case is MAN74A: self = .display
@@ -33,6 +35,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             case is WorkbenchPullUp: self = .pullUp
             case is WorkbenchClock: self = .clock
             case let driver as SevenSegmentDriver: self = .driver(driver.kind)
+            case let capacitor as Capacitor: self = .capacitance(capacitor.kind, capacitor.value)
             case let resistor as Resistor: self = .resistance(resistor.value, resistor.unit)
             case let source as WorkbenchPower: self = .power(source.rail)
             case let source as WorkbenchSwitch: self = .switchInput(showsValue: source.showsValue, isOn: source.isOn)
@@ -138,6 +141,7 @@ struct WorkbenchArchive: Codable, FileDocument {
                 placement = ChipUnitPlacement(kind: kind, packageID: packageID, unit: unit)
             case .additionalCounter(let kind): component = kind.makeComponent()
             case .analogSwitch(let kind): component = AnalogSwitch(kind)
+            case .timer555: component = NE555()
             case .counter: component = CD4510()
             case .divider: component = CD4060()
             case .display: component = MAN74A()
@@ -149,6 +153,11 @@ struct WorkbenchArchive: Codable, FileDocument {
             case .pullUp: component = WorkbenchPullUp()
             case .clock: component = WorkbenchClock()
             case .power(let rail): component = WorkbenchPower(rail)
+            case .capacitance(let kind, let value):
+                guard Capacitor.isValid(value, kind: kind) else { throw ArchiveError.invalidCircuit }
+                let capacitor = Capacitor(kind)
+                capacitor.setCapacitance(value)
+                component = capacitor
             case .resistance(let value, let unit):
                 guard value > 0, (value * unit.multiplier).isFinite else { throw ArchiveError.invalidCircuit }
                 let resistor = Resistor()

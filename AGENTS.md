@@ -33,12 +33,50 @@ The simulator supports individual IC pin connections, interactive wiring, digita
 
 The following components have been implemented and tested.
 
+### Logic gates
+
+| Component | Description |
+|---|---|
+| CD4011 | Quad two-input NAND gate |
+| CD4071 | Quad two-input OR gate |
+| CD4081 | Quad two-input AND gate |
+| CD40106 | Hex digital Schmitt-symbol inverter |
+
+CD4011/CD4071/CD4081 use separately placed A–D gates and one shared E power unit. Preserve physical pin mapping (1/2→3, 5/6→4, 8/9→10, 12/13→11), VDD on 14, and VSS on 7. All units share one underlying chip instance.
+
+For CD4071, any HIGH input establishes HIGH. Two LOW inputs establish LOW. Other combinations produce X, including LOW with an unknown or disconnected input. Preserve the shared unpowered-output X policy and Automatic Power behaviour.
+
+### Timers
+
+| Component | Description |
+|---|---|
+| NE555 | Digital latch plus ideal RC timing for standard astable/monostable circuits |
+
+NE555 uses pins 1 GND, 2 TRIG, 3 OUT, 4 active-LOW RESET, 5 CONT, 6 THRES, 7 DISCH, 8 VCC. RESET overrides the comparators; LOW TRIG sets OUT even with HIGH THRES. HIGH TRIG/HIGH THRES resets it; HIGH TRIG/LOW THRES holds its state. DISCH sinks LOW when OUT is LOW and is HIGH-Z when OUT is HIGH. Preserve shared power validation and latch invalidation on supply loss.
+
+`NE555TimingSystem` recognises standard grounded-capacitor astable (two resistors) and monostable (one resistor) networks using actual nets and component values. It integrates ideal exponential charge/discharge, feeds 1/3 and 2/3 supply comparator inputs to NE555, and settles every output edge. Preserve the longer startup pulse (ln(3), versus steady-state ln(2)), held-trigger priority, and bounded elapsed-time catch-up alongside external clocks. Shared power validation remains in SimulationEngine.
+
+This is a limited ideal 5 V RC model, not a general analog solver. Reject unsupported timing loads/networks and reversed polarized timing capacitors with a warning and X. Require actual +5 V/GND timing rails even in Automatic Power mode. CONT may be open or capacitor-bypassed to GND; driven control voltages remain unsupported. Rewiring/reopen/power restoration restarts timing-capacitor voltage at zero; value edits retain its current voltage. A monostable needs a valid reset/trigger to establish known state. Consult PROJECT_STATUS.md for wiring and test values.
+
+### Capacitors
+
+| Component | Description |
+|---|---|
+| C_Polarized | Editable µF; pin 1 positive, pin 2 negative; default 10 µF |
+| C_Small | Editable nF; non-polarized; default 100 nF |
+
+Preserve the KiCad capacitor plate styling: C_Polarized has an outlined positive plate and a filled negative plate, with the positive-side + marker. Import the plate fill metadata rather than guessing polarity from placement or rotation.
+
+Preserve right-click Set Capacitance text editors, positive finite-value validation, labels, rotation, Undo/Redo and save/open. Outside recognised NE555 timing networks these are DC-open elements. Timing resistors must stop their legacy weak digital drive; ordinary resistors keep their existing digital behaviour. Do not silently extend the RC model to arbitrary circuits.
+
 ### Counters
 
 | Component | Description |
 |---|---|
 | CD4017 | Decade counter with decoded outputs |
 | CD4026 | Decade counter with 7-segment outputs |
+| CD4060 | External-clock binary divider |
+| CD4510 | Presettable BCD up/down counter with carry |
 | CD4516 | Binary up/down counter |
 | CD4518 | Dual BCD counter |
 | CD4520 | Dual binary counter |
@@ -77,6 +115,16 @@ The MAN74A requires its common-cathode pins 4 and 12 connected to GND. The MAN72
 
 Display segments must respond to their electrical connections, not automatically interpret BCD values.
 
+## Workbench files and controls
+
+- Preserve File → Open… (⌘O) and File → Save… (⌘S). Commands use the focused Workbench window.
+- Keep labelled Open and Save buttons accessible when the controls wrap in narrower windows.
+- Save circuits as JSON. Open also accepts legacy Workbench files with other filename extensions.
+- Validate archive contents before replacing the current circuit, and report file errors to the user.
+- Preserve saved package identities, shared components, wiring, junctions, positions, rotations, component settings, and power mode.
+- Manual Clock Source components reopen paused; valid powered NE555 RC circuits start automatically. Archives preserve circuit configuration, not running sequential state or capacitor charge.
+- For file-workflow changes, verify the native Save/Open dialogs as well as archive round-trip tests.
+
 ## Testing requirements
 
 For all new or modified components, verify:
@@ -96,6 +144,16 @@ For all new or modified components, verify:
 3. Improve wiring, circuit editing and debugging.
 4. Support increasingly complex circuits built from multiple interconnected components.
 5. Work toward simulating a complete CMOS digital clock.
+
+## Latest verification
+
+On 20 November 2026, the capacitor/NE555 RC implementation passed all 84 test case executions. Coverage includes capacitor validation/DC isolation/symbols, Undo/Redo, archives, exponential charging, astable startup/steady-state timing, monostable reset/timeout/held trigger, R/C scaling, downstream edge counting, bounded scheduling, power cycling, polarity rejection, unsupported wiring, and Workbench automatic restart after reopen. The initial downstream-count test had an incorrect expected interval; this was corrected. Mixed-clock regression tests use an injected elapsed-time source to avoid mixing wall time with virtual time. No failing tests remain. Xcode emitted only the App Intents metadata extraction warning (no AppIntents dependency).
+
+Native UI checks confirmed both capacitor symbols and text-field units, changed values to 47 µF and 22 nF, rejected zero, and saved/cleared/reopened those values through the native dialogs.
+
+The subsequent capacitor negative-plate rendering correction also passed the full macOS Xcode suite.
+
+The previous Save/Open fix passed the full suite and native save/clear/reopen checks. Preserve those file controls.
 
 ## Project maintenance
 
