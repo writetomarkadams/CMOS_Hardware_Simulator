@@ -1,4 +1,3 @@
-
 import SwiftUI
 
 @main
@@ -8,39 +7,106 @@ struct CMOS4000SimulatorApp: App {
             WorkbenchView()
         }
         .defaultSize(width: 900, height: 700)
-        .commands { WorkbenchFileCommands() }
+        .commands { WorkbenchCommands() }
     }
 }
 
-
-struct WorkbenchFileActions {
+struct WorkbenchActions {
     let open: () -> Void
     let save: () -> Void
-    let isEnabled: Bool
+    let importCircuit: () -> Void
+    let clear: () -> Void
+    let undo: () -> Void
+    let redo: () -> Void
+    let rotate: (Int) -> Void
+    let oscilloscope: () -> Void
+    let wireList: Binding<Bool>
+    let zoomIn: () -> Void
+    let zoomOut: () -> Void
+    let resetZoom: () -> Void
+    let fitCircuit: () -> Void
+    let powerMode: Binding<PowerMode>
+    let canUndo: Bool
+    let canRedo: Bool
+    let canRotate: Bool
+    let hasCircuit: Bool
+    let zoom: CGFloat
 }
 
-private struct WorkbenchFileActionsKey: FocusedValueKey {
-    typealias Value = WorkbenchFileActions
+private struct WorkbenchActionsKey: FocusedValueKey {
+    typealias Value = WorkbenchActions
 }
 
 extension FocusedValues {
-    var workbenchFiles: WorkbenchFileActions? {
-        get { self[WorkbenchFileActionsKey.self] }
-        set { self[WorkbenchFileActionsKey.self] = newValue }
+    var workbenchActions: WorkbenchActions? {
+        get { self[WorkbenchActionsKey.self] }
+        set { self[WorkbenchActionsKey.self] = newValue }
     }
 }
 
-struct WorkbenchFileCommands: Commands {
-    @FocusedValue(\.workbenchFiles) private var actions
+struct WorkbenchCommands: Commands {
+    @FocusedValue(\.workbenchActions) private var actions
 
     var body: some Commands {
         CommandGroup(after: .newItem) {
             Button("Open…") { actions?.open() }
-                .keyboardShortcut("o", modifiers: .command)
-                .disabled(actions?.isEnabled != true)
+                .keyboardShortcut("o")
+                .disabled(actions == nil)
             Button("Save…") { actions?.save() }
-                .keyboardShortcut("s", modifiers: .command)
-                .disabled(actions?.isEnabled != true)
+                .keyboardShortcut("s")
+                .disabled(actions == nil)
+            Button("Import Circuit…") { actions?.importCircuit() }
+                .disabled(actions == nil)
+            Divider()
+            Button("Clear Workbench…") { actions?.clear() }
+                .disabled(actions?.hasCircuit != true)
+        }
+        CommandGroup(replacing: .undoRedo) {
+            Button("Undo") { actions?.undo() }
+                .keyboardShortcut("z")
+                .disabled(actions?.canUndo != true)
+            Button("Redo") { actions?.redo() }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .disabled(actions?.canRedo != true)
+            Divider()
+            Button("Rotate 90° Clockwise") { actions?.rotate(1) }
+                .keyboardShortcut("r")
+                .disabled(actions?.canRotate != true)
+            Button("Rotate 90° Counterclockwise") { actions?.rotate(-1) }
+                .keyboardShortcut("r", modifiers: [.command, .shift])
+                .disabled(actions?.canRotate != true)
+        }
+        CommandGroup(after: .toolbar) {
+            Button("Oscilloscope") { actions?.oscilloscope() }
+                .disabled(actions == nil)
+            if let actions {
+                Toggle("Wire List", isOn: actions.wireList)
+            } else {
+                Button("Wire List") {}.disabled(true)
+            }
+            Divider()
+            Button("Zoom In") { actions?.zoomIn() }
+                .keyboardShortcut("=")
+                .disabled(actions.map { !$0.hasCircuit || $0.zoom >= 4 } ?? true)
+            Button("Zoom Out") { actions?.zoomOut() }
+                .keyboardShortcut("-")
+                .disabled(actions.map { !$0.hasCircuit || $0.zoom <= 0.25 } ?? true)
+            Button("Reset Zoom to 100%") { actions?.resetZoom() }
+                .keyboardShortcut("0")
+                .disabled(actions?.hasCircuit != true)
+            Button("Fit Circuit") { actions?.fitCircuit() }
+                .keyboardShortcut("9")
+                .disabled(actions?.hasCircuit != true)
+        }
+        CommandMenu("Simulation") {
+            if let actions {
+                Picker("Power Mode", selection: actions.powerMode) {
+                    ForEach(PowerMode.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                }
+                .pickerStyle(.inline)
+            } else {
+                Button("Power Mode") {}.disabled(true)
+            }
         }
     }
 }

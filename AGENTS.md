@@ -75,11 +75,14 @@ Preserve right-click Set Capacitance text editors, positive finite-value validat
 |---|---|
 | CD4017 | Decade counter with decoded outputs |
 | CD4026 | Decade counter with 7-segment outputs |
+| CD4029 | Presettable binary/decade up/down counter with active-low carry |
 | CD4060 | External-clock binary divider |
 | CD4510 | Presettable BCD up/down counter with carry |
 | CD4516 | Binary up/down counter |
 | CD4518 | Dual BCD counter |
 | CD4520 | Dual binary counter |
+
+CD4029 uses PRESET ENABLE (1), active-low CARRY IN (5) and CARRY OUT (7), BINARY/DECADE (9), UP/DOWN (10), CLOCK (15), VSS (8) and VDD (16). JAM1–JAM4 are 4/12/13/3 and Q1–Q4 are 6/11/14/2, least significant first. PRESET ENABLE HIGH loads JAM asynchronously. With PRESET ENABLE and CARRY IN LOW, a rising CLOCK advances the count. BINARY/DECADE HIGH selects 0–15 and LOW selects 0–9. UP/DOWN HIGH counts up. Preserve shared power invalidation, common-clock cascading, and physical pin mapping for KiCad `4xxx:4029` and `4xxx_IEEE:4029`. See the [TI CD4029B datasheet](https://www.ti.com/lit/ds/symlink/cd4029b.pdf).
 
 ### Bidirectional switches
 
@@ -115,6 +118,10 @@ The MAN74A requires its common-cathode pins 4 and 12 connected to GND. The MAN72
 
 Display segments must respond to their electrical connections, not automatically interpret BCD values.
 
+### Connectors
+
+The vertical 2.54 mm pin headers (1×2, 1×3, 1×8) expose independent physical contacts. They never drive or bridge nets. Preserve pin numbering and validate the KiCad footprint together with the matching schematic symbol.
+
 ## Workbench files and controls
 
 - Preserve File → Open… (⌘O) and File → Save… (⌘S). Commands use the focused Workbench window.
@@ -146,6 +153,8 @@ For all new or modified components, verify:
 5. Work toward simulating a complete CMOS digital clock.
 
 ## Latest verification
+
+On 20 November 2026, all 100 macOS Xcode tests passed with the CD4029 addition. Coverage includes binary and decade rollover in both directions, asynchronous JAM, carry inhibit, common-clock cascading, supply loss, KiCad import, and Workbench archives.
 
 On 20 November 2026, the capacitor/NE555 RC implementation passed all 84 test case executions. Coverage includes capacitor validation/DC isolation/symbols, Undo/Redo, archives, exponential charging, astable startup/steady-state timing, monostable reset/timeout/held trigger, R/C scaling, downstream edge counting, bounded scheduling, power cycling, polarity rejection, unsupported wiring, and Workbench automatic restart after reopen. The initial downstream-count test had an incorrect expected interval; this was corrected. Mixed-clock regression tests use an injected elapsed-time source to avoid mixing wall time with virtual time. No failing tests remain. Xcode emitted only the App Intents metadata extraction warning (no AppIntents dependency).
 

@@ -108,6 +108,55 @@ struct CapacitorTimingTests {
         #expect(batched.downstream.pins[1]!.driveState == .high) // Q5 after five rising edges.
     }
 
+    @Test("Diode steering requires a charging path and produces separate high and low phases",
+          arguments: [false, true])
+    func diodeSteering(hasChargingPath: Bool) {
+        let engine = SimulationEngine()
+        let timer = NE555()
+        let capacitor = Capacitor(.polarized)
+        let ra = Resistor()
+        let rb = Resistor()
+        let charge = Diode1N4148()
+        let discharge = Diode1N4148()
+        let vcc = WorkbenchPower(.fiveVolts)
+        let ground = WorkbenchPower(.ground)
+        ra.setResistance(10, unit: .kilohms)
+        rb.setResistance(100, unit: .kilohms)
+        for part: any LogicComponent in [timer, capacitor, ra, rb, charge, discharge, vcc, ground] {
+            engine.addComponent(part)
+        }
+        func wire(_ pins: Pin...) {
+            let net = Net(name: "Test")
+            for pin in pins { net.connect(pin) }
+            engine.addNet(net)
+        }
+        wire(vcc.pins[1]!, timer.pins[4]!, timer.pins[8]!, ra.pins[1]!)
+        wire(ground.pins[1]!, timer.pins[1]!, capacitor.pins[2]!)
+        wire(timer.pins[2]!, timer.pins[6]!, capacitor.pins[1]!, charge.pins[1]!, rb.pins[2]!)
+        wire(timer.pins[7]!, discharge.pins[1]!)
+        wire(charge.pins[2]!, discharge.pins[2]!, rb.pins[1]!, hasChargingPath ? ra.pins[2]! : Pin(number: 1, name: "Open", direction: .input))
+        #expect(engine.settle())
+        let output = timer.pins[3]!
+        if !hasChargingPath {
+            #expect(timer.timingIssue?.contains("no charging path") == true)
+            #expect(output.driveState == .undefined)
+            return
+        }
+        #expect(timer.timingIssue == nil)
+        #expect(charge.isTimingElement && discharge.isTimingElement)
+        #expect(output.driveState == .high)
+        _ = engine.advanceTime(by: 0.14)
+        #expect(output.driveState == .high)
+        _ = engine.advanceTime(by: 0.02)
+        #expect(output.driveState == .low)
+        _ = engine.advanceTime(by: 0.90)
+        #expect(output.driveState == .low)
+        _ = engine.advanceTime(by: 0.08)
+        #expect(output.driveState == .high)
+        _ = engine.advanceTime(by: 0.11)
+        #expect(output.driveState == .low)
+    }
+
     @Test("R and C values determine oscillation period; nF capacitor can be reversed")
     func valueScaling() {
         for kind in CapacitorKind.allCases {

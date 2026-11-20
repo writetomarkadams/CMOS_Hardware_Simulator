@@ -158,6 +158,19 @@ struct KiCadSymbol {
         filledMarkings = []
     }
 
+    static let pinHeaders: [PinHeaderKind: Self] = Dictionary(uniqueKeysWithValues:
+        PinHeaderKind.allCases.map { kind in
+            let pitch = 2.54
+            let terminals = kind.pinNumbers.map { number in
+                Terminal(id: number, name: "", style: "line",
+                         position: CGPoint(x: Double(number - 1) * pitch, y: -5.08),
+                         inward: CGVector(dx: 0, dy: 1), length: 5.08)
+            }
+            let body = CGRect(x: -5.08, y: -2.54, width: Double(kind.rawValue + 1) * pitch, height: 3.81)
+            return (kind, Self(body: body, terminals: terminals))
+        }
+    )
+
     private static func counterSymbol(_ chip: any PoweredChip) -> Self {
         let inputs = chip.pins.values.filter { $0.direction == .input }.sorted { $0.number < $1.number }
         let outputs = chip.pins.values.filter { $0.direction == .output }.sorted { $0.number < $1.number }
@@ -346,7 +359,7 @@ struct KiCadSymbol {
     }
 }
 
-private enum KiCadExpression {
+enum KiCadExpression {
     case atom(String)
     case list([KiCadExpression])
 
@@ -375,22 +388,56 @@ private enum KiCadExpression {
     static func parse(_ text: String) -> Self? {
         let pattern = #""(?:\\.|[^"\\])*"|[()]|[^\s()"]+"#
         guard let lexer = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let textRange = NSRange(text.startIndex..., in: text)
+        var offset = 0
+        let source = text as NSString
         var stack: [[Self]] = [[]]
-        for match in lexer.matches(in: text, range: NSRange(text.startIndex..., in: text)) {
+        for match in lexer.matches(in: text, range: textRange) {
+            let skipped = NSRange(location: offset, length: match.range.location - offset)
+            guard source.substring(with: skipped).allSatisfy(\.isWhitespace) else { return nil }
+            offset = NSMaxRange(match.range)
             guard let range = Range(match.range, in: text) else { return nil }
             let token = text[range]
             switch token {
             case "(":
+                guard stack.count < 256 else { return nil }
                 stack.append([])
             case ")":
                 guard stack.count > 1, let expressions = stack.popLast() else { return nil }
                 stack[stack.count - 1].append(.list(expressions))
             default:
-                let value = token.first == "\"" ? token.dropFirst().dropLast() : token
-                stack[stack.count - 1].append(.atom(String(value)))
+                let value = token.first == "\"" ? unquote(token.dropFirst().dropLast()) : String(token)
+                stack[stack.count - 1].append(.atom(value))
             }
         }
-        guard stack.count == 1, stack[0].count == 1 else { return nil }
+        let trailing = NSRange(location: offset, length: textRange.length - offset)
+        guard source.substring(with: trailing).allSatisfy(\.isWhitespace),
+              stack.count == 1, stack[0].count == 1 else { return nil }
         return stack[0].first
+    }
+
+    private static func unquote(_ token: Substring) -> String {
+        var result = ""
+        var escaped = false
+        for character in token {
+            if escaped {
+                switch character {
+                case "\"": result.append("\"")
+                case "\\": result.append("\\")
+                case "n": result.append("\n")
+                case "r": result.append("\r")
+                case "t": result.append("\t")
+                default:
+                    result.append("\\")
+                    result.append(character)
+                }
+                escaped = false
+            } else if character == "\\" {
+                escaped = true
+            } else {
+                result.append(character)
+            }
+        }
+        return result
     }
 }

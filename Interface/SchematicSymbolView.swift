@@ -20,6 +20,7 @@ struct SchematicSymbolView: View {
 
     private var resistor: Resistor? { part.component as? Resistor }
     private var display: SevenSegmentDisplay? { part.component as? SevenSegmentDisplay }
+    private var isPinHeader: Bool { part.component is PinHeader }
     private var isDiode: Bool { part.component is Diode1N4148 }
     private var isDiscrete: Bool { symbol.isCircular || resistor != nil || capacitor != nil || isDiode }
 
@@ -35,6 +36,9 @@ struct SchematicSymbolView: View {
     }
 
     private var labelPosition: CGPoint {
+        if isPinHeader {
+            return point(CGPoint(x: symbol.body.minX, y: symbol.body.minY))
+        }
         if resistor != nil || capacitor != nil || symbol.isCircular {
             return CGPoint(x: bodyCenter.x + 42, y: bodyCenter.y)
         }
@@ -68,15 +72,19 @@ struct SchematicSymbolView: View {
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
                 let outlinePath = symbolOutline()
-                if isSelected {
+                if isSelected && !isPinHeader {
                     context.fill(outlinePath, with: .color(.schematicSelectionFill))
                     context.stroke(outlinePath, with: .color(.cyan.opacity(0.3)), lineWidth: 4)
-                } else if !isDiscrete {
+                } else if !isDiscrete && !isPinHeader {
                     context.fill(outlinePath, with: .color(bodyFill))
                 }
-                if capacitor == nil { context.stroke(outlinePath, with: .color(outline), lineWidth: 1.2) }
+                if capacitor == nil && !isPinHeader {
+                    context.stroke(outlinePath, with: .color(outline), lineWidth: 1.2)
+                }
                 if let display {
-                    drawSegments(of: display, in: context)
+                    drawSevenSegmentDisplay(display, in: context, point: point) {
+                        bench.readings[WorkbenchTerminal(partID: partID, pinNumber: $0)] ?? .highImpedance
+                    }
                 }
                 for marking in symbol.filledMarkings {
                     var path = Path()
@@ -119,7 +127,7 @@ struct SchematicSymbolView: View {
             VStack(spacing: 1) {
                 Text(part.reference ?? "U\(partID)")
                     .fontWeight(.semibold)
-                Text(valueLabel)
+                if !isPinHeader { Text(valueLabel) }
             }
             .font(.system(size: 10, design: .monospaced))
             .foregroundStyle(labelInk)
@@ -132,38 +140,6 @@ struct SchematicSymbolView: View {
         }
         .frame(width: bounds.width * scale + 2 * padding + (symbol.isCircular || resistor != nil || capacitor != nil ? 85 : 0),
                height: bounds.height * scale + 2 * padding)
-    }
-
-    private func drawSegments(of display: SevenSegmentDisplay, in context: GraphicsContext) {
-        // MAN72A uses the same segment geometry shifted right, with a left decimal point.
-        func segmentPoint(_ position: CGPoint) -> CGPoint {
-            point(CGPoint(x: position.x + (display.commonAnode ? 1.778 : 0),
-                          y: position.y - (display.commonAnode ? 0.254 : 0)))
-        }
-        let segments: [(CGPoint, CGPoint)] = [
-            (CGPoint(x: -0.508, y: -11.43), CGPoint(x: 1.524, y: -11.43)),
-            (CGPoint(x: 2.032, y: -10.922), CGPoint(x: 1.778, y: -8.89)),
-            (CGPoint(x: 1.778, y: -7.874), CGPoint(x: 1.524, y: -5.842)),
-            (CGPoint(x: -1.016, y: -5.334), CGPoint(x: 1.016, y: -5.334)),
-            (CGPoint(x: -1.27, y: -7.874), CGPoint(x: -1.524, y: -5.842)),
-            (CGPoint(x: -1.016, y: -10.922), CGPoint(x: -1.27, y: -8.89)),
-            (CGPoint(x: -0.762, y: -8.382), CGPoint(x: 1.27, y: -8.382))
-        ]
-        func color(for number: Int) -> Color {
-            let lit = display.isLit(number) {
-                bench.readings[WorkbenchTerminal(partID: partID, pinNumber: $0)] ?? .highImpedance
-            }
-            return lit ? .red : outline.opacity(0.16)
-        }
-        for (number, segment) in zip(display.segmentNumbers, segments) {
-            var path = Path()
-            path.move(to: segmentPoint(segment.0))
-            path.addLine(to: segmentPoint(segment.1))
-            context.stroke(path, with: .color(color(for: number)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-        }
-        let dot = point(display.commonAnode ? CGPoint(x: -0.762, y: -5.588) : CGPoint(x: 2.794, y: -5.334))
-        context.fill(Path(ellipseIn: CGRect(x: dot.x - 1.5, y: dot.y - 1.5, width: 3, height: 3)),
-                     with: .color(color(for: display.segmentNumbers[7])))
     }
 
     private func symbolOutline() -> Path {
@@ -216,7 +192,8 @@ struct SchematicSymbolView: View {
                 .font(.system(size: 8, design: .monospaced))
                 .foregroundStyle(outline)
                 .allowsHitTesting(false)
-                .position(x: (endpoint.x + inner.x) / 2 + (pin.inward.dx == 0 ? 10 : 0),
+                .rotationEffect(.degrees(isPinHeader ? -90 : 0))
+                .position(x: (endpoint.x + inner.x) / 2 + (isPinHeader ? -7 : pin.inward.dx == 0 ? 10 : 0),
                           y: (endpoint.y + inner.y) / 2 - (pin.inward.dy == 0 ? 7 : 0))
                 .accessibilityHidden(true)
 
@@ -226,6 +203,7 @@ struct SchematicSymbolView: View {
                 Image(systemName: selected ? "circle.inset.filled" : "circle.fill")
                     .font(.system(size: selected ? 12 : 8))
                     .foregroundStyle(selected ? Color.accentColor : outline)
+                    .opacity(isPinHeader && !selected ? 0 : 1)
                     .frame(width: 15, height: 15)
                     .contentShape(Rectangle())
                     .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
@@ -267,6 +245,41 @@ struct SchematicSymbolView: View {
             context.stroke(path, with: .color(.cyan.opacity(0.35)), lineWidth: 4)
         }
         context.stroke(path, with: .color(outline), lineWidth: 1)
+        if isPinHeader {
+            let contact = CGRect(x: inner.x - 1.5, y: inner.y - 3, width: 3, height: 6)
+            context.fill(Path(contact), with: .color(isSelected ? .schematicSelectionInk : outline))
+        }
     }
 
+}
+
+func drawSevenSegmentDisplay(_ display: SevenSegmentDisplay, in context: GraphicsContext,
+                         point: (CGPoint) -> CGPoint, state: (Int) -> LogicState) {
+    // MAN72A uses the same segment geometry shifted right, with a left decimal point.
+    func segmentPoint(_ position: CGPoint) -> CGPoint {
+        point(CGPoint(x: position.x + (display.commonAnode ? 1.778 : 0),
+                      y: position.y - (display.commonAnode ? 0.254 : 0)))
+    }
+    let segments: [(CGPoint, CGPoint)] = [
+        (CGPoint(x: -0.508, y: -11.43), CGPoint(x: 1.524, y: -11.43)),
+        (CGPoint(x: 2.032, y: -10.922), CGPoint(x: 1.778, y: -8.89)),
+        (CGPoint(x: 1.778, y: -7.874), CGPoint(x: 1.524, y: -5.842)),
+        (CGPoint(x: -1.016, y: -5.334), CGPoint(x: 1.016, y: -5.334)),
+        (CGPoint(x: -1.27, y: -7.874), CGPoint(x: -1.524, y: -5.842)),
+        (CGPoint(x: -1.016, y: -10.922), CGPoint(x: -1.27, y: -8.89)),
+        (CGPoint(x: -0.762, y: -8.382), CGPoint(x: 1.27, y: -8.382))
+    ]
+    func color(for number: Int) -> Color {
+        let lit = display.isLit(number, reading: state)
+        return lit ? .red : Color(red: 0.65, green: 0, blue: 0).opacity(0.16)
+    }
+    for (number, segment) in zip(display.segmentNumbers, segments) {
+        var path = Path()
+        path.move(to: segmentPoint(segment.0))
+        path.addLine(to: segmentPoint(segment.1))
+        context.stroke(path, with: .color(color(for: number)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+    }
+    let dot = point(display.commonAnode ? CGPoint(x: -0.762, y: -5.588) : CGPoint(x: 2.794, y: -5.334))
+    context.fill(Path(ellipseIn: CGRect(x: dot.x - 1.5, y: dot.y - 1.5, width: 3, height: 3)),
+                 with: .color(color(for: display.segmentNumbers[7])))
 }

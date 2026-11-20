@@ -21,6 +21,7 @@ struct ComponentLibraryView: View {
         case additionalCounter(CounterChip)
         case analogSwitch(AnalogSwitchKind)
         case capacitor(CapacitorKind)
+        case pinHeader(PinHeaderKind)
         case timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, led, pullUp
 
         var id: Self { self }
@@ -39,6 +40,7 @@ struct ComponentLibraryView: View {
             case .rippleCounter: "CD4060"
             case .transistor: "2N3904"
             case .capacitor(let kind): kind.rawValue
+            case .pinHeader(let kind): kind.name
             case .resistor: "R_Small"
             case .diode: "1N4148"
             case .pullUp: "Logic Pull-up"
@@ -64,6 +66,7 @@ struct ComponentLibraryView: View {
             case .rippleCounter: "14-stage Binary Counter"
             case .transistor: "NPN Transistor (Digital Switch)"
             case .capacitor(let kind): "Capacitor · \(kind.unit) · NE555 RC timing"
+            case .pinHeader(let kind): "Vertical · 2.54 mm · \(kind.footprint)"
             case .resistor: "Resistor"
             case .diode: "Switching Diode"
             case .pullUp: "Weak HIGH for open-collector outputs"
@@ -80,6 +83,7 @@ struct ComponentLibraryView: View {
             switch self {
             case .chip, .chipPower, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
             case .transistor: "circle.branch"
+            case .pinHeader: "circle.grid.2x2"
             case .capacitor, .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
             case .pullUp, .power(.fiveVolts): "arrow.up"
             case .power(.ground): "arrow.down"
@@ -114,7 +118,8 @@ struct ComponentLibraryView: View {
     }
 
     private var discreteComponents: [Entry] {
-        [Entry.transistor, .resistor, .diode, .capacitor(.polarized), .capacitor(.small)].filter { $0.matches(search) }
+        ([Entry.transistor, .resistor, .diode, .capacitor(.polarized), .capacitor(.small)]
+            + PinHeaderKind.allCases.map(Entry.pinHeader)).filter { $0.matches(search) }
     }
 
     private var sourcesAndIndicators: [Entry] {
@@ -224,6 +229,8 @@ struct ComponentLibraryView: View {
             bench.add("2N3904", component: NPN2N3904())
         case .capacitor(let kind):
             bench.add(kind.rawValue, component: Capacitor(kind))
+        case .pinHeader(let kind):
+            bench.add(kind.name, component: PinHeader(kind))
         case .resistor:
             bench.add("Resistor", component: Resistor())
         case .diode:

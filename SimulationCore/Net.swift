@@ -3,6 +3,7 @@ final class Net {
     let name: String
 
     private(set) var pins: [Pin] = []
+    private(set) var dcVoltage: Double?
     private(set) var state: LogicState = .highImpedance
 
     init(name: String) {
@@ -28,6 +29,15 @@ final class Net {
         resolve(pins: nets.flatMap(\.pins), nets: nets)
     }
 
+    func receiveDC(_ voltage: Double) {
+        dcVoltage = voltage
+        // Fixed thresholds for the discrete model's ideal 5 V logic interface.
+        state = voltage <= 0.8 ? .low : voltage >= 2.0 ? .high : .undefined
+        for pin in pins {
+            pin.receive(state, strongState: pin.strongState, supplyRail: pin.supplyRail)
+        }
+    }
+
     private static func resolve(pins: [Pin], nets: [Net]) {
         var strongState = LogicState.highImpedance
         var weakState = LogicState.highImpedance
@@ -43,7 +53,10 @@ final class Net {
         let railDrivers = pins.filter { $0.driveState != .highImpedance && $0.drivenSupplyRail != nil }
         let rail = railDrivers.first?.drivenSupplyRail
         let supply = railDrivers.allSatisfy { $0.drivenSupplyRail == rail } && state != .undefined ? rail : nil
-        for net in nets { net.state = state }
+        for net in nets {
+            net.state = state
+            net.dcVoltage = nil
+        }
         for pin in pins {
             pin.receive(state, strongState: strongState, supplyRail: supply)
         }

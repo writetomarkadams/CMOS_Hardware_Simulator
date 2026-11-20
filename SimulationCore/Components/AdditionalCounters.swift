@@ -156,6 +156,93 @@ final class CD4516: PoweredChip {
     }
 }
 
+final class CD4029: PoweredChip {
+    static let outputPins = [6, 11, 14, 2] // Q1 through Q4, least significant first.
+    static let jamPins = [4, 12, 13, 3]
+    let supplyPins = (vdd: 16, vss: 8)
+    let pins = counterPins(
+        inputs: [(1, "PE"), (5, "CARRY IN"), (9, "BINARY/DECADE"), (10, "UP/DOWN"), (15, "CLK")] +
+            Array(zip(CD4029.jamPins, (1...4).map { "JAM \($0)" })),
+        outputs: Array(zip(CD4029.outputPins, (1...4).map { "Q\($0)" })) + [(7, "CARRY OUT")]
+    )
+    private var count: Int?
+    private let clock = ClockEdgeDetector()
+
+    func powerDidFail() {
+        count = nil
+        clock.reset()
+    }
+
+    func evaluate() {
+        let edge = clock.update(pins[15]!.state)
+        let enable = pins[5]!.state.inverted
+        let mode = pins[9]!.state
+        let direction = pins[10]!.state
+        let preset = pins[1]!.state
+        switch preset {
+        case .high:
+            count = presetValue()
+        case .low:
+            if edge == .rising && enable != .low {
+                count = enable == .high ? nextCount(mode: mode, direction: direction) : nil
+            }
+        default:
+            count = nil
+        }
+
+        for (bit, number) in Self.outputPins.enumerated() {
+            pins[number]!.drive(count.map { $0 & (1 << bit) == 0 ? .low : .high } ?? .undefined)
+        }
+        pins[7]!.drive(and(enable, terminalCount(mode: mode, direction: direction)).inverted)
+    }
+
+    private func presetValue() -> Int? {
+        var value = 0
+        for (bit, number) in Self.jamPins.enumerated() {
+            switch pins[number]!.state {
+            case .high: value |= 1 << bit
+            case .low: break
+            default: return nil
+            }
+        }
+        return value
+    }
+
+    private func nextCount(mode: LogicState, direction: LogicState) -> Int? {
+        let modulus: Int
+        switch mode {
+        case .high: modulus = 16
+        case .low: modulus = 10
+        default: return nil
+        }
+        // An asynchronous JAM can load any four-bit value. The decade
+        // sequence is modeled only for valid BCD states.
+        guard let count, count < modulus else { return nil }
+        switch direction {
+        case .high: return (count + 1) % modulus
+        case .low: return (count + modulus - 1) % modulus
+        default: return nil
+        }
+    }
+
+    private func terminalCount(mode: LogicState, direction: LogicState) -> LogicState {
+        guard let count else { return .undefined }
+        if mode != .high && count > 9 { return .undefined }
+        let up: LogicState
+        switch mode {
+        case .high: up = count == 15 ? .high : .low
+        case .low: up = count == 9 ? .high : .low
+        default: up = count == 9 ? .undefined : .low
+        }
+        let down: LogicState = count == 0 ? .high : .low
+        switch direction {
+        case .high: return up
+        case .low: return down
+        default: return up == down ? up : .undefined
+        }
+    }
+}
+
 enum DualCounterKind: String, CaseIterable {
     case bcd = "CD4518"
     case binary = "CD4520"
@@ -198,12 +285,14 @@ final class DualCounter: PoweredChip {
 enum CounterChip: String, CaseIterable, Codable {
     case cd4017 = "CD4017"
     case cd4026 = "CD4026"
+    case cd4029 = "CD4029"
     case cd4516 = "CD4516"
 
     var detail: String {
         switch self {
         case .cd4017: "Decade Counter · Ten Decoded Outputs"
         case .cd4026: "Decade Counter · Seven-Segment Driver"
+        case .cd4029: "Presettable Binary/Decade Up/Down Counter"
         case .cd4516: "Presettable Binary Up/Down Counter"
         }
     }
@@ -212,6 +301,7 @@ enum CounterChip: String, CaseIterable, Codable {
         switch self {
         case .cd4017: CD4017()
         case .cd4026: CD4026()
+        case .cd4029: CD4029()
         case .cd4516: CD4516()
         }
     }
@@ -220,6 +310,7 @@ enum CounterChip: String, CaseIterable, Codable {
         switch component {
         case is CD4017: .cd4017
         case is CD4026: .cd4026
+        case is CD4029: .cd4029
         case is CD4516: .cd4516
         default: nil
         }

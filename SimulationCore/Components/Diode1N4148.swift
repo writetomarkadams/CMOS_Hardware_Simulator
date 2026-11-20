@@ -4,9 +4,16 @@ final class Diode1N4148: LogicComponent {
         2: Pin(number: 2, name: "A", direction: .bidirectional, isWeakDriver: true)
     ]
 
+    var isTimingElement = false
+
     func evaluate() {
         let cathode = pins[1]!
         let anode = pins[2]!
+        if isTimingElement {
+            cathode.drive(.highImpedance)
+            anode.drive(.highImpedance)
+            return
+        }
         // Forward conduction can source HIGH at K or sink LOW at A.
         cathode.drive(anode.strongState == .high ? .high : .highImpedance)
         anode.drive(cathode.strongState == .low ? .low : .highImpedance)

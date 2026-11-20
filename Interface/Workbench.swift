@@ -90,7 +90,23 @@ struct WorkbenchPart: Identifiable {
     let unitPlacement: ChipUnitPlacement?
     let chipNumber: Int?
 
+    let importedReference: String?
+    let importedSymbol: ImportedSymbol?
+
+    init(id: Int, name: String, component: any LogicComponent, unitPlacement: ChipUnitPlacement?,
+         chipNumber: Int?, importedReference: String? = nil, importedSymbol: ImportedSymbol? = nil) {
+        self.id = id
+        self.name = name
+        self.component = component
+        self.unitPlacement = unitPlacement
+        self.chipNumber = chipNumber
+        self.importedReference = importedReference
+        self.importedSymbol = importedSymbol
+    }
+
     var reference: String? {
+        if let importedReference { return importedReference + (unitPlacement?.unit.letter ?? "") }
+        if component is PinHeader { return "J\(id)" }
         if component is Capacitor { return "C\(id)" }
         if component is Resistor { return "R\(id)" }
         if component is Diode1N4148 { return "D\(id)" }
@@ -111,11 +127,107 @@ struct WorkbenchPart: Identifiable {
     }
 }
 
+struct SchematicMark: Codable {
+    enum Kind: String, Codable { case label, noConnect, junction }
+    let kind: Kind
+    let position: CGPoint
+    var text: String? = nil
+}
+
 struct WorkbenchWire: Identifiable, Codable {
     let id: Int
     let first: WorkbenchTerminal
     let second: WorkbenchTerminal
     let bends: [CGPoint]
+    let netName: String?
+    enum SourceRoute: String, Codable { case straight, alias, pinAttachment }
+    let sourceRoute: SourceRoute?
+
+    init(id: Int, first: WorkbenchTerminal, second: WorkbenchTerminal, bends: [CGPoint], netName: String? = nil,
+         sourceRoute: SourceRoute? = nil) {
+        self.id = id
+        self.first = first
+        self.second = second
+        self.bends = bends
+        self.netName = netName
+        self.sourceRoute = sourceRoute
+    }
+
+    static let gridSpacing: CGFloat = 10
+
+    static func snap(_ point: CGPoint) -> CGPoint {
+        CGPoint(x: (point.x / gridSpacing).rounded() * gridSpacing,
+                y: (point.y / gridSpacing).rounded() * gridSpacing)
+    }
+
+    func route(from start: CGPoint, to end: CGPoint) -> [CGPoint] {
+        if sourceRoute == nil, netName != nil, bends.isEmpty,
+           abs(start.x - end.x) > 20, abs(start.y - end.y) > 1 {
+            let middleX = Self.snap(CGPoint(x: (start.x + end.x) / 2, y: 0)).x
+            return Self.gridRoute(from: start, through: [
+                CGPoint(x: middleX, y: Self.snap(start).y),
+                CGPoint(x: middleX, y: Self.snap(end).y), end
+            ])
+        }
+        if sourceRoute == .straight {
+            return Self.orthogonalRoute(from: start, through: bends + [end])
+        }
+        return Self.gridRoute(from: start, through: bends + [end])
+    }
+
+    // Off-grid pins need short leads to the routing grid. Stored waypoints
+    // can also be off-grid in older archives or after splitting a source wire.
+    static func gridRoute(from start: CGPoint, through waypoints: [CGPoint]) -> [CGPoint] {
+        var anchors: [CGPoint] = []
+        var previous = start
+        for target in waypoints where target != previous {
+            let horizontal = previous.y == target.y
+            let vertical = previous.x == target.x
+            let snappedStart = snap(previous)
+            let snappedEnd = snap(target)
+            let shortLead = abs(previous.x - target.x) + abs(previous.y - target.y) <= gridSpacing
+            if !(horizontal && (previous.y == snappedStart.y || shortLead)),
+               !(vertical && (previous.x == snappedStart.x || shortLead)) {
+                anchors.append(snappedStart)
+                anchors.append(snappedEnd)
+            }
+            anchors.append(target)
+            previous = target
+        }
+        return orthogonalRoute(from: start, through: anchors)
+    }
+
+    func isDrawn(from start: CGPoint, to end: CGPoint) -> Bool {
+        sourceRoute != .alias &&
+            (sourceRoute != .pinAttachment || hypot(start.x - end.x, start.y - end.y) > 0.001)
+    }
+
+    // The points describe geometry only. A bend or crossing never creates an electrical junction.
+    static func orthogonalRoute(from start: CGPoint, through waypoints: [CGPoint]) -> [CGPoint] {
+        var points = [start]
+        for target in waypoints {
+            let previous = points[points.count - 1]
+            guard target != previous else { continue }
+            let dx = target.x - previous.x
+            let dy = target.y - previous.y
+            if dx != 0, dy != 0 {
+                var horizontalFirst = abs(dx) >= abs(dy)
+                if points.count >= 2 {
+                    let incoming = points[points.count - 2]
+                    // Avoid doubling back over the leg into an existing bend.
+                    if previous.y == incoming.y, (previous.x - incoming.x) * dx < 0 {
+                        horizontalFirst = false
+                    } else if previous.x == incoming.x, (previous.y - incoming.y) * dy < 0 {
+                        horizontalFirst = true
+                    }
+                }
+                points.append(horizontalFirst ? CGPoint(x: target.x, y: previous.y)
+                                              : CGPoint(x: previous.x, y: target.y))
+            }
+            points.append(target)
+        }
+        return points
+    }
 }
 
 @Observable
@@ -207,10 +319,15 @@ final class Workbench {
     private(set) var isStable = true
     private(set) var powerMode: PowerMode = .automatic
     private(set) var powerStates: [Int: ChipPowerState] = [:]
+    var wiringEnabled = true
     private(set) var selectedTerminal: WorkbenchTerminal?
     private(set) var selectedWireID: Int?
     private(set) var pendingBends: [CGPoint] = []
     private var engine = SimulationEngine()
+    let scope = Oscilloscope()
+    private(set) var scopeProbes: [Int: ScopeProbe] = [:]
+    @ObservationIgnored private var netsByTerminal: [WorkbenchTerminal: Net] = [:]
+    @ObservationIgnored private var scopeReaders: [Int: (Bool) -> ScopeValue] = [:]
     private struct RunningClock {
         let source: WorkbenchClock
         let startedAt: Double
@@ -237,6 +354,7 @@ final class Workbench {
     private var nextChipNumber = 1
     private var nextWireID = 1
 
+    private(set) var schematicMarks: [SchematicMark] = []
     private(set) var junctions: [Int: CGPoint] = [:]
     private(set) var positions: [Int: CGPoint] = [:]
     private(set) var rotations: [Int: Int] = [:]
@@ -248,12 +366,14 @@ final class Workbench {
         let powerMode: PowerMode
         let wires: [WorkbenchWire]
         let junctions: [Int: CGPoint]
+        let schematicMarks: [SchematicMark]
         let positions: [Int: CGPoint]
         let rotations: [Int: Int]
         let clockFrequencies: [Int: ClockFrequency]
         let ledColours: [Int: LEDIndicatorSymbol.LampColour]
         let resistances: [(Resistor, Double, ResistanceUnit)]
         let capacitances: [(Capacitor, Double)]
+        let scopeProbes: [Int: ScopeProbe]
         let nextPartID: Int
         let nextChipNumber: Int
         let nextWireID: Int
@@ -265,7 +385,7 @@ final class Workbench {
     var canRedo: Bool { !redoHistory.isEmpty }
 
     private var currentEdit: Edit {
-        Edit(parts: parts, powerMode: powerMode, wires: wires, junctions: junctions, positions: positions, rotations: rotations,
+        Edit(parts: parts, powerMode: powerMode, wires: wires, junctions: junctions, schematicMarks: schematicMarks, positions: positions, rotations: rotations,
              clockFrequencies: clockFrequencies, ledColours: ledColours,
              resistances: parts.compactMap { part in
                  guard let resistor = part.component as? Resistor else { return nil }
@@ -275,7 +395,7 @@ final class Workbench {
                  guard let capacitor = part.component as? Capacitor else { return nil }
                  return (capacitor, capacitor.value)
              },
-             nextPartID: nextPartID, nextChipNumber: nextChipNumber, nextWireID: nextWireID)
+             scopeProbes: scopeProbes, nextPartID: nextPartID, nextChipNumber: nextChipNumber, nextWireID: nextWireID)
     }
 
     private func recordEdit() {
@@ -301,9 +421,12 @@ final class Workbench {
         cancelWire()
         selectedWireID = nil
         powerMode = edit.powerMode
+        scope.clear()
+        scopeProbes = edit.scopeProbes
         parts = edit.parts
         wires = edit.wires
         junctions = edit.junctions
+        schematicMarks = edit.schematicMarks
         positions = edit.positions
         rotations = edit.rotations
         clockFrequencies = edit.clockFrequencies
@@ -433,8 +556,12 @@ final class Workbench {
         } else {
             chipNumber = nil
         }
+        let importedReference = unitPlacement.flatMap { placement in
+            parts.first { $0.unitPlacement?.packageID == placement.packageID }?.importedReference
+        }
         parts.append(WorkbenchPart(id: nextPartID, name: name, component: component,
-                                   unitPlacement: unitPlacement, chipNumber: chipNumber))
+                                   unitPlacement: unitPlacement, chipNumber: chipNumber,
+                                   importedReference: importedReference))
         nextPartID += 1
         engine.automaticallyPowerChips = powerMode == .automatic
         if !engine.components.contains(where: { $0 === component }) {
@@ -444,6 +571,7 @@ final class Workbench {
     }
 
     func select(_ terminal: WorkbenchTerminal) {
+        guard wiringEnabled else { return }
         selectedWireID = nil
         guard let first = selectedTerminal else {
             selectedTerminal = terminal
@@ -466,13 +594,14 @@ final class Workbench {
     func joinWire(_ id: Int, at point: CGPoint, before: [CGPoint], after: [CGPoint]) {
         guard let source = selectedTerminal, let index = wires.firstIndex(where: { $0.id == id }) else { return }
         let target = wires[index]
+        let splitRoute = target.sourceRoute == .pinAttachment ? nil : target.sourceRoute
         guard source != target.first, source != target.second else { return }
         recordEdit()
         let junctionID = nextWireID
         let endpoint = WorkbenchTerminal.junction(junctionID)
         junctions[junctionID] = point
-        wires[index] = WorkbenchWire(id: target.id, first: target.first, second: endpoint, bends: before)
-        wires.append(WorkbenchWire(id: nextWireID, first: endpoint, second: target.second, bends: after))
+        wires[index] = WorkbenchWire(id: target.id, first: target.first, second: endpoint, bends: before, netName: target.netName, sourceRoute: splitRoute)
+        wires.append(WorkbenchWire(id: nextWireID, first: endpoint, second: target.second, bends: after, netName: target.netName, sourceRoute: splitRoute))
         wires.append(WorkbenchWire(id: nextWireID + 1, first: source, second: endpoint, bends: pendingBends))
         nextWireID += 2
         cancelWire()
@@ -481,7 +610,8 @@ final class Workbench {
 
     func addBend(at point: CGPoint) {
         guard selectedTerminal != nil else { return }
-        pendingBends.append(point)
+        let snapped = WorkbenchWire.snap(point)
+        if pendingBends.last != snapped { pendingBends.append(snapped) }
     }
 
     func cancelWire() {
@@ -535,6 +665,18 @@ final class Workbench {
         rebuildNets()
     }
 
+    func junctionDots(visible: [WorkbenchWire], pinContacts: [WorkbenchWire]) -> [CGPoint] {
+        var branchCounts: [Int: Int] = [:]
+        for wire in visible + pinContacts {
+            for endpoint in [wire.first, wire.second] where endpoint.isJunction {
+                branchCounts[endpoint.pinNumber, default: 0] += 1
+            }
+        }
+        return branchCounts.compactMap { id, count in
+            count >= 3 ? junctions[id] : nil
+        }
+    }
+
     private func pruneJunctions() {
         let used = Set(wires.flatMap { [$0.first, $0.second] })
         junctions = junctions.filter { used.contains(.junction($0.key)) }
@@ -556,6 +698,7 @@ final class Workbench {
         parts.removeAll()
         wires.removeAll()
         junctions.removeAll()
+        schematicMarks.removeAll()
         nextPartID = 1
         nextChipNumber = 1
         nextWireID = 1
@@ -591,15 +734,23 @@ final class Workbench {
         while servicedTime < now {
             let index = runningClocks.indices.min { runningClocks[$0].nextEdge < runningClocks[$1].nextEdge }
             let target = min(now, index.map { max(servicedTime, runningClocks[$0].nextEdge) } ?? now)
+            let start = servicedTime
+            let observe: ((Double, Bool) -> Void)? = scope.running && !scopeReaders.isEmpty
+                ? { elapsed, stable in self.captureScope(at: start + elapsed, stable: stable) }
+                : nil
             let advance = engine.hasTimingNetworks
-                ? engine.advanceTime(by: target - servicedTime, maximumEvents: 32)
+                ? engine.advanceTime(by: target - start, maximumEvents: 32, onSettled: observe)
                 : SimulationEngine.TimeAdvance(elapsed: target - servicedTime, stable: true)
             servicedTime += advance.elapsed
             stable = advance.stable && stable
             if servicedTime >= target, let index, runningClocks[index].nextEdge <= servicedTime {
                 runningClocks[index].source.advance()
                 runningClocks[index].edgesDelivered += 1
-                stable = engine.settle() && stable
+                let edgeStable = engine.settle()
+                stable = edgeStable && stable
+                captureScope(at: servicedTime, stable: edgeStable)
+            } else if !engine.hasTimingNetworks {
+                captureScope(at: servicedTime, stable: stable)
             }
             batches += 1
             if batches >= 1 && clockTime >= budgetDeadline { break }
@@ -622,7 +773,7 @@ final class Workbench {
 
     private func updateClockStatus() {
         let running = !runningClocks.isEmpty || engine.hasTimingNetworks
-        if running && !hasRunningClocks { servicedTime = clockTime }
+        if running && !hasRunningClocks { servicedTime = max(servicedTime, clockTime) }
         if running != hasRunningClocks { hasRunningClocks = running }
         if !running && clockIsBehind { clockIsBehind = false }
     }
@@ -639,11 +790,38 @@ final class Workbench {
         let loaded = try archive.makeCircuit()
         recordEdit()
         restore(Edit(parts: loaded.parts, powerMode: archive.savedPowerMode, wires: loaded.wires, junctions: archive.junctions,
+                     schematicMarks: archive.schematicMarks ?? [],
                      positions: loaded.positions, rotations: loaded.rotations,
                      clockFrequencies: loaded.frequencies, ledColours: loaded.colours, resistances: [], capacitances: [],
-                     nextPartID: (loaded.parts.map(\.id).max() ?? 0) + 1,
+                     scopeProbes: loaded.scopeProbes, nextPartID: (loaded.parts.map(\.id).max() ?? 0) + 1,
                      nextChipNumber: loaded.nextChipNumber,
                      nextWireID: (archive.wires.map(\.id) + Array(archive.junctions.keys)).max().map { $0 + 1 } ?? 1))
+    }
+
+    @discardableResult
+    func importCircuit(_ preview: CircuitImportPreview, replacing: Bool) -> WorkbenchPart? {
+        guard preview.canImport else { return nil }
+        let append = !replacing && !parts.isEmpty
+        let bottom = (positions.values.map(\.y) + junctions.values.map(\.y) +
+                      wires.flatMap { $0.bends.map(\.y) } + schematicMarks.map(\.position.y)).max() ?? 0
+        let imported = preview.place(startingPart: append ? nextPartID : 1,
+                                     startingChip: append ? nextChipNumber : 1,
+                                     startingWire: append ? nextWireID : 1,
+                                     below: append ? bottom + 600 : 30,
+                                     existingReferences: append ? Set(parts.compactMap(\.reference)) : [])
+        recordEdit()
+        restore(Edit(parts: (append ? parts : []) + imported.parts,
+                     powerMode: append ? powerMode : .explicit,
+                     wires: (append ? wires : []) + imported.wires,
+                     junctions: (append ? junctions : [:]).merging(imported.junctions) { _, incoming in incoming },
+                     schematicMarks: (append ? schematicMarks : []) + imported.schematicMarks,
+                     positions: (append ? positions : [:]).merging(imported.positions) { _, incoming in incoming },
+                     rotations: (append ? rotations : [:]).merging(imported.rotations) { _, incoming in incoming },
+                     clockFrequencies: append ? clockFrequencies : [:],
+                     ledColours: append ? ledColours : [:], resistances: [], capacitances: [],
+                     scopeProbes: append ? scopeProbes : [:], nextPartID: imported.nextPartID,
+                     nextChipNumber: imported.nextChipNumber, nextWireID: imported.nextWireID))
+        return imported.parts.first
     }
 
     func label(for terminal: WorkbenchTerminal) -> String {
@@ -654,7 +832,7 @@ final class Workbench {
     }
 
     private func rebuildNets() {
-        servicedTime = clockTime
+        servicedTime = max(servicedTime, clockTime)
         engine = SimulationEngine()
         engine.automaticallyPowerChips = powerMode == .automatic
         var registered: Set<ObjectIdentifier> = []
@@ -677,9 +855,16 @@ final class Workbench {
             groups.append(terminals)
         }
 
+        var namesByTerminal: [WorkbenchTerminal: Set<String>] = [:]
+        for wire in wires {
+            if let name = wire.netName { namesByTerminal[wire.first, default: []].insert(name) }
+        }
+        netsByTerminal.removeAll()
         for (index, group) in groups.enumerated() {
-            let net = Net(name: "Net \(index + 1)")
+            let names = Set(group.flatMap { namesByTerminal[$0] ?? [] }).sorted()
+            let net = Net(name: names.isEmpty ? "Net \(index + 1)" : names.joined(separator: " / "))
             for terminal in group {
+                netsByTerminal[terminal] = net
                 if let part = parts.first(where: { $0.id == terminal.partID }),
                    let pin = part.pins[terminal.pinNumber] {
                     net.connect(pin)
@@ -687,13 +872,70 @@ final class Workbench {
             }
             engine.addNet(net)
         }
+        let validProbes = scopeProbes.filter { scopeReader(for: $0.value) != nil }
+        if validProbes != scopeProbes {
+            for channel in scopeProbes.keys where validProbes[channel] == nil { scope.reset(channel: channel) }
+            scopeProbes = validProbes
+        }
+        refreshScopeReaders()
         settle()
+    }
+
+    func assignScopeProbe(_ probe: ScopeProbe?, to channel: Int) {
+        guard (0..<Oscilloscope.channelCount).contains(channel), probe != scopeProbes[channel],
+              probe.map({ scopeReader(for: $0) != nil }) ?? true else { return }
+        recordEdit()
+        scopeProbes[channel] = probe
+        scope.reset(channel: channel)
+        refreshScopeReaders()
+        refreshScope()
+    }
+
+    func refreshScope() {
+        captureScope(at: hasRunningClocks ? servicedTime : max(servicedTime, clockTime), stable: isStable)
+    }
+
+    private func refreshScopeReaders() {
+        scopeReaders = scopeProbes.compactMapValues { scopeReader(for: $0) }
+    }
+
+    private func scopeReader(for probe: ScopeProbe) -> ((Bool) -> ScopeValue)? {
+        let terminal: WorkbenchTerminal
+        switch probe {
+        case .wire(let id):
+            guard let wire = wires.first(where: { $0.id == id }),
+                  let net = netsByTerminal[wire.first] else { return nil }
+            return scopeNetReader(net)
+        case .pin(let pin):
+            terminal = pin
+        }
+        guard let part = parts.first(where: { $0.id == terminal.partID }),
+              let pin = part.pins[terminal.pinNumber] else { return nil }
+        if let net = netsByTerminal[terminal] { return scopeNetReader(net) }
+        let readsNet = part.component is any SwitchedConnectivity && pin.direction == .bidirectional
+        return { stable in .logic(stable ? (readsNet ? pin.state : pin.driveState) : .undefined) }
+    }
+
+    private func scopeNetReader(_ net: Net) -> (Bool) -> ScopeValue {
+        let engine = engine
+        return { stable in
+            guard stable else { return .logic(.undefined) }
+            if let voltage = engine.timingVoltage(on: net), voltage.isFinite { return .voltage(voltage) }
+            if let voltage = net.dcVoltage { return .voltage(voltage) }
+            return .logic(net.state)
+        }
+    }
+
+    private func captureScope(at time: Double, stable: Bool) {
+        guard !scopeReaders.isEmpty else { return }
+        scope.capture(at: time) { scopeReaders[$0]?(stable) }
     }
 
     private func settle() {
         isStable = engine.settle()
         updateClockStatus()
         publishReadings()
+        refreshScope()
     }
 
     private func publishReadings() {

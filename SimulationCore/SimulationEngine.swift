@@ -45,6 +45,12 @@ final class SimulationEngine {
     private let timing = NE555TimingSystem()
     var hasTimingNetworks: Bool { !timing.networks.isEmpty }
 
+    func timingVoltage(on net: Net) -> Double? {
+        timing.networks.first { network in
+            net.pins.contains { $0 === network.timer.pins[6] }
+        }?.capacitor.voltage
+    }
+
     struct TimeAdvance {
         let elapsed: Double
         let stable: Bool
@@ -52,9 +58,11 @@ final class SimulationEngine {
 
     /// Advance to each RC comparator crossing and settle downstream logic at every edge.
     /// A bounded batch returns elapsed time so the caller retains unprocessed time.
-    func advanceTime(by seconds: Double, maximumEvents: Int = 256) -> TimeAdvance {
+    func advanceTime(by seconds: Double, maximumEvents: Int = 256,
+                     onSettled: ((Double, Bool) -> Void)? = nil) -> TimeAdvance {
         guard seconds.isFinite, seconds >= 0, maximumEvents > 0 else { return TimeAdvance(elapsed: 0, stable: false) }
         var stable = settle()
+        onSettled?(0, stable)
         var elapsed = 0.0
         for _ in 0..<maximumEvents {
             let remaining = seconds - elapsed
@@ -62,7 +70,9 @@ final class SimulationEngine {
             let step = min(remaining, timing.nextEventDelay)
             timing.integrate(step)
             elapsed += step
-            stable = settle() && stable
+            let stepStable = settle()
+            stable = stepStable && stable
+            onSettled?(elapsed, stepStable)
             if step == remaining { break }
         }
         return TimeAdvance(elapsed: elapsed, stable: stable)
@@ -138,8 +148,9 @@ final class SimulationEngine {
             for index in drivenPins.indices {
                 previousStates[index] = drivenPins[index].driveState
             }
+            let modeled = switches.isEmpty ? DiscreteDC.apply(components: components, nets: nets) : []
             timing.prepareInputs()
-            for component in components {
+            for component in components where !modeled.contains(ObjectIdentifier(component)) {
                 if let chip = component as? any PoweredChip, !automaticallyPowerChips, chip.powerState != .powered {
                     if unpoweredChips.insert(ObjectIdentifier(chip)).inserted {
                         chip.powerDidFail()
