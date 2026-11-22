@@ -27,19 +27,21 @@ struct LEDIndicatorSymbol: View {
 
     private var colour: LampColour { bench.ledColours[partID, default: .green] }
 
+    static let endpoint = CGPoint(x: 20, y: 30)
+
     private var terminal: WorkbenchTerminal {
         WorkbenchTerminal(partID: partID, pinNumber: 1)
     }
 
     var body: some View {
         let state = bench.readings[terminal] ?? .highImpedance
-        let terminalSelected = bench.selectedTerminal == terminal
+        let endpoint = Self.endpoint
         let outline = isSelected ? Color.schematicSelectionInk : Color.secondary
 
         ZStack {
             Path { path in
-                path.move(to: CGPoint(x: 14, y: 15))
-                path.addLine(to: CGPoint(x: 14, y: 32))
+                path.move(to: CGPoint(x: endpoint.x, y: 15))
+                path.addLine(to: CGPoint(x: endpoint.x, y: endpoint.y - (bench.showsOpenPinMarker(terminal) ? 2.5 : 0)))
             }
             .stroke(outline, lineWidth: 1.2)
             .allowsHitTesting(false)
@@ -75,24 +77,11 @@ struct LEDIndicatorSymbol: View {
                 PartRotationCommands(rotate: rotate)
                 Button("Remove Part", role: .destructive) { bench.removePart(partID) }
             }
-            .position(x: 14, y: 13)
+            .position(x: endpoint.x, y: 13)
 
-            Button {
-                bench.select(terminal)
-            } label: {
-                Image(systemName: terminalSelected ? "circle.inset.filled" : "circle")
-                    .font(.system(size: 8))
-                    .foregroundStyle(terminalSelected ? Color.accentColor : outline)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-                    .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(bench.label(for: terminal))
-            .accessibilityValue(state.description)
-            .accessibilityAddTraits(terminalSelected ? .isSelected : [])
-            .position(x: 14, y: 32)
+            SchematicPinButton(terminal: terminal, bench: bench)
+                .position(endpoint)
         }
-        .frame(width: 28, height: 42)
+        .frame(width: 40, height: 60)
     }
 }

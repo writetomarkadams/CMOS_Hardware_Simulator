@@ -16,14 +16,19 @@ struct ImportedSymbolView: View {
     private var bounds: CGRect { drawing.bounds }
 
     private func point(_ local: CGPoint) -> CGPoint {
-        // Reflect in source sheet axes, outside the rotation applied below.
-        let mirrorX = drawing.mirror == "x"
-        let mirrorY = drawing.mirror == "y"
-        let oddTurn = bench.rotations[part.id, default: 0] % 2 != 0
-        let signX: CGFloat = (oddTurn ? mirrorX : mirrorY) ? -1 : 1
-        let signY: CGFloat = (oddTurn ? mirrorY : mirrorX) ? -1 : 1
-        return CGPoint(x: local.x * ImportedSymbol.scale * signX - bounds.minX,
-                       y: local.y * ImportedSymbol.scale * signY - bounds.minY)
+        let offset = drawing.localReflection(CGPoint(x: local.x * drawing.drawingScale,
+                                                       y: local.y * drawing.drawingScale), turns: turns)
+        return viewPoint(offset)
+    }
+
+    private var turns: Int { bench.rotations[part.id, default: 0] }
+
+    private func viewPoint(_ offset: CGPoint) -> CGPoint {
+        CGPoint(x: offset.x - bounds.minX, y: offset.y - bounds.minY)
+    }
+
+    private func endpoint(_ pin: ImportedSymbol.Pin) -> CGPoint {
+        viewPoint(drawing.pinOffset(pin, turns: turns))
     }
 
     private var value: String {
@@ -36,10 +41,20 @@ struct ImportedSymbolView: View {
         return drawing.value
     }
 
+    private var schematicDisplay: SevenSegmentDisplay? {
+        bench.componentAppearance == .schematic ? part.component as? SevenSegmentDisplay : nil
+    }
+
+    private var displayBody: CGRect? {
+        guard schematicDisplay != nil,
+              let background = drawing.graphics.first(where: { $0.fill == "background" }) else { return nil }
+        return background.points.reduce(CGRect.null) { $0.union(CGRect(origin: $1, size: .zero)) }
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
-                for graphic in drawing.graphics {
+                for graphic in drawing.graphics where displayBody == nil || graphic.fill == "background" {
                     let points = graphic.points.map(point)
                     let path = Path { path in
                         switch graphic.kind {
@@ -55,35 +70,53 @@ struct ImportedSymbolView: View {
                     } else if graphic.fill == "outline" {
                         context.fill(path, with: .color(ink))
                     }
-                    context.stroke(path, with: .color(isSelected ? .schematicSelectionInk : ink), lineWidth: 1.2)
+                    if bench.illuminatedLEDs.contains(part.id) {
+                        context.stroke(path, with: .color(.red.opacity(0.30)), lineWidth: 7)
+                        context.stroke(path, with: .color(.red), lineWidth: 2)
+                    } else {
+                        context.stroke(path, with: .color(isSelected ? .schematicSelectionInk : ink), lineWidth: 1.2)
+                    }
                 }
                 if let display = part.component as? SevenSegmentDisplay {
-                    drawSevenSegmentDisplay(display, in: context, point: point) {
-                        bench.readings[WorkbenchTerminal(partID: part.id, pinNumber: $0)] ?? .highImpedance
+                    func reading(_ pin: Int) -> LogicState {
+                        bench.readings[WorkbenchTerminal(partID: part.id, pinNumber: pin)] ?? .highImpedance
+                    }
+                    if bench.componentAppearance == .physicalDIP {
+                        drawSevenSegmentFace(display, in: context, point: point, state: reading)
+                    } else if let displayBody {
+                        drawSevenSegmentSchematic(display, body: displayBody, in: context, point: point, state: reading)
                     }
                 }
                 for field in drawing.fields ?? [] {
                     if field.key == "Reference" && part.component is WorkbenchPower { continue }
-                    let offset = CGPoint(x: field.offset.x * ImportedSymbol.scale - bounds.minX,
-                                         y: field.offset.y * ImportedSymbol.scale - bounds.minY)
+                    let offset = CGPoint(x: field.offset.x * drawing.drawingScale - bounds.minX,
+                                         y: field.offset.y * drawing.drawingScale - bounds.minY)
                     let text = field.key == "Reference" ? part.reference ?? part.name : value
                     var labelContext = context
                     labelContext.translateBy(x: offset.x, y: offset.y)
                     labelContext.rotate(by: .degrees(field.angle))
                     let anchor: UnitPoint = field.justify == "left" ? .leading : field.justify == "right" ? .trailing : .center
-                    labelContext.draw(Text(text).font(.system(size: field.size * ImportedSymbol.scale, design: .monospaced))
+                    labelContext.draw(Text(text).font(.system(size: field.size * drawing.drawingScale, design: .monospaced))
                         .foregroundStyle(textInk), at: .zero, anchor: anchor)
                 }
                 for pin in drawing.pins where part.pins[pin.id] != nil {
-                    let start = point(pin.position)
+                    let start = endpoint(pin)
                     let end = point(pin.end)
-                    let length = hypot(end.x - start.x, end.y - start.y)
-                    let dx = length > 0 ? (end.x - start.x) / length : 0
-                    let dy = length > 0 ? (end.y - start.y) / length : 0
+                    let original = point(pin.position)
+                    let length = hypot(end.x - original.x, end.y - original.y)
+                    let dx = length > 0 ? (end.x - original.x) / length : 0
+                    let dy = length > 0 ? (end.y - original.y) / length : 0
+                    let terminal = WorkbenchTerminal(partID: part.id, pinNumber: pin.id)
+                    let noConnect = drawing.noConnectPins.contains(pin.id) && !bench.isTerminalConnected(terminal)
                     let inverted = pin.style.hasPrefix("inverted")
                     let lineEnd = CGPoint(x: end.x - (inverted ? 6 * dx : 0), y: end.y - (inverted ? 6 * dy : 0))
                     var path = Path()
-                    path.addLines([start, lineEnd])
+                    if length > 0 {
+                        path.addLines(schematicPinLead(from: start, toward: original,
+                                                      trim: bench.showsOpenPinMarker(terminal, explicitNoConnect: noConnect) ? 2.5 : 0,
+                                                      inward: CGVector(dx: dx, dy: dy)))
+                        path.addLine(to: lineEnd)
+                    }
                     if inverted {
                         path.addEllipse(in: CGRect(x: end.x - 3 * dx - 3, y: end.y - 3 * dy - 3, width: 6, height: 6))
                     }
@@ -93,7 +126,7 @@ struct ImportedSymbolView: View {
                                        CGPoint(x: end.x + 4 * dy, y: end.y - 4 * dx)])
                     }
                     context.stroke(path, with: .color(ink), lineWidth: 1)
-                    if drawing.noConnectPins.contains(pin.id) {
+                    if noConnect {
                         context.stroke(schematicCross(at: start), with: .color(.blue), lineWidth: 1.3)
                     }
                 }
@@ -139,16 +172,12 @@ struct ImportedSymbolView: View {
             }
         }
         .frame(width: bounds.width, height: bounds.height)
-        .rotationEffect(.degrees(rotation))
-        .offset(x: bounds.minX, y: bounds.minY)
     }
 
     private func terminal(_ pin: ImportedSymbol.Pin, showLabel: Bool) -> some View {
         let terminal = WorkbenchTerminal(partID: part.id, pinNumber: pin.id)
-        let selected = bench.selectedTerminal == terminal
-        let start = point(pin.position)
+        let start = endpoint(pin)
         let end = point(pin.end)
-        let state = bench.readings[terminal] ?? .highImpedance
         return ZStack {
             if showLabel {
                 Text(String(pin.id))
@@ -159,19 +188,24 @@ struct ImportedSymbolView: View {
                               y: (start.y + end.y) / 2 - (start.y == end.y ? 6 : 0))
                     .allowsHitTesting(false)
             }
-            Button { bench.select(terminal) } label: {
-                Circle().fill(selected ? Color.accentColor : ink)
-                    .frame(width: selected ? 8 : 4, height: selected ? 8 : 4)
-                    .opacity(drawing.noConnectPins.contains(pin.id) && !selected ? 0 : 1)
-                    .frame(width: 14, height: 14)
-                    .contentShape(Rectangle())
-                    .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
+            if let name = schematicDisplay?.pins[pin.id]?.name {
+                let lead = point(pin.position)
+                let length = hypot(end.x - lead.x, end.y - lead.y)
+                if length > 0 {
+                    let fontSize = drawing.drawingScale * 1.4
+                    let label = name == "DP" ? "D.P." : name
+                    let inset = 7 + CGFloat(label.count) * fontSize * 0.3
+                    Text(label)
+                        .font(.system(size: fontSize, design: .monospaced))
+                        .foregroundStyle(textInk)
+                        .position(x: end.x + (end.x - lead.x) / length * inset,
+                                  y: end.y + (end.y - lead.y) / length * 10)
+                        .allowsHitTesting(false)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(bench.label(for: terminal))
-            .accessibilityValue(state.description)
-            .help("\(bench.label(for: terminal)) · \(state.description)")
-            .position(start)
+            SchematicPinButton(terminal: terminal, bench: bench,
+                               spacing: schematicPinSpacing(at: start, among: drawing.pins.map(endpoint)))
+                .position(start)
         }
     }
 

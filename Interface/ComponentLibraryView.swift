@@ -14,7 +14,7 @@ struct ComponentLibraryView: View {
 
     private enum Entry: Hashable, Identifiable {
         case chip(MultiUnitChip)
-        case chipPower(MultiUnitChip, Int)
+        case chipPower(MultiUnitChip, Int, String)
         case displayDriver(SevenSegmentDriverKind)
         case sevenSegmentDisplay, commonAnodeDisplay
         case power(PowerRail)
@@ -22,14 +22,16 @@ struct ComponentLibraryView: View {
         case analogSwitch(AnalogSwitchKind)
         case capacitor(CapacitorKind)
         case pinHeader(PinHeaderKind)
-        case timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, led, pullUp
+        case cd4070, timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, oscillatorDIP8, led, led3mm, pullUp
 
         var id: Self { self }
 
         var name: String {
             switch self {
+            case .chip(.xor): "CD4070 XOR Gate"
             case .chip(let kind): kind.partName
-            case .chipPower(let kind, let package): "\(kind.partName) U\(package)\(kind.powerUnit.letter)"
+            case .chipPower(let kind, _, let reference): "\(kind.partName) \(reference)"
+            case .cd4070: "CD4070"
             case .timer555: "NE555"
             case .counter: "CD4510"
             case .additionalCounter(let kind): kind.rawValue
@@ -48,14 +50,18 @@ struct ComponentLibraryView: View {
             case .logicSwitch: "Logic Switch"
             case .logicInput: "Logic Input"
             case .clock: "Clock Source"
+            case .oscillatorDIP8: "CXO_DIP8"
             case .led: "Logic LED"
+            case .led3mm: "LED_D3.0mm"
             }
         }
 
         var detail: String {
             switch self {
+            case .chip(.xor): "Individually placed XOR gate"
             case .chip(let kind): kind.unitName
             case .chipPower: "Shared Power Unit · VDD / VSS"
+            case .cd4070: "Four XOR gates and power · Switchable DIP-14"
             case .timer555: "Timer · Digital inputs or standard RC astable/monostable"
             case .counter: "BCD Up/Down Counter"
             case .additionalCounter(let kind): kind.detail
@@ -75,13 +81,15 @@ struct ComponentLibraryView: View {
             case .logicSwitch: "Manual HIGH or LOW output"
             case .logicInput: "Click to toggle 0 (LOW) or 1 (HIGH)"
             case .clock: "Square wave · Hz, kHz, or MHz"
+            case .oscillatorDIP8: "Crystal oscillator · kHz or MHz"
             case .led: "Digital state indicator"
+            case .led3mm: "3 mm through-hole LED · \(LED3mm.footprint)"
             }
         }
 
         var icon: String {
             switch self {
-            case .chip, .chipPower, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
+            case .chip, .chipPower, .cd4070, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
             case .transistor: "circle.branch"
             case .pinHeader: "circle.grid.2x2"
             case .capacitor, .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
@@ -89,8 +97,8 @@ struct ComponentLibraryView: View {
             case .power(.ground): "arrow.down"
             case .logicSwitch: "switch.2"
             case .logicInput: "0.square"
-            case .clock: "waveform.path"
-            case .led: "lightbulb"
+            case .clock, .oscillatorDIP8: "waveform.path"
+            case .led, .led3mm: "lightbulb"
             case .sevenSegmentDisplay, .commonAnodeDisplay: "number.square"
             }
         }
@@ -104,14 +112,17 @@ struct ComponentLibraryView: View {
     }
 
     private var chips: [Entry] {
-        (MultiUnitChip.allCases.map(Entry.chip) + [.timer555, .counter, .rippleCounter]
+        (MultiUnitChip.allCases.map(Entry.chip) + [.cd4070, .timer555, .counter, .rippleCounter]
             + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
             + CounterChip.allCases.map(Entry.additionalCounter)
             + AnalogSwitchKind.allCases.map(Entry.analogSwitch)
             + MultiUnitChip.allCases.flatMap { kind in
                 bench.packages(for: kind).filter {
                     bench.availableUnits(in: $0, kind: kind).contains(kind.powerUnit)
-                }.map { Entry.chipPower(kind, $0) }
+                }.map { package in
+                    let unit = ChipUnitPlacement(kind: kind, packageID: package, unit: kind.powerUnit)
+                    return Entry.chipPower(kind, package, bench.reference(for: unit))
+                }
             })
             .sorted { $0.name < $1.name }
             .filter { $0.matches(search) }
@@ -123,7 +134,7 @@ struct ComponentLibraryView: View {
     }
 
     private var sourcesAndIndicators: [Entry] {
-        [Entry.power(.fiveVolts), .power(.ground), .logicSwitch, .logicInput, .clock, .led, .sevenSegmentDisplay, .commonAnodeDisplay, .pullUp].filter { $0.matches(search) }
+        [Entry.power(.fiveVolts), .power(.ground), .logicSwitch, .logicInput, .clock, .oscillatorDIP8, .led, .led3mm, .sevenSegmentDisplay, .commonAnodeDisplay, .pullUp].filter { $0.matches(search) }
     }
 
     var body: some View {
@@ -165,7 +176,7 @@ struct ComponentLibraryView: View {
             }
 
             if case .chip(let kind) = selection, let next = bench.nextUnit(for: kind) {
-                LabeledContent("Next unit", value: next.reference)
+                LabeledContent("Next unit", value: bench.reference(for: next))
                     .font(.callout)
             }
 
@@ -207,12 +218,14 @@ struct ComponentLibraryView: View {
         switch selection {
         case .chip(let kind):
             bench.addNextUnit(for: kind)
-        case .chipPower(let kind, let package):
+        case .chipPower(let kind, let package, _):
             bench.addUnit(kind.powerUnit, kind: kind, to: package)
         case .analogSwitch(let kind):
             bench.add(kind.rawValue, component: AnalogSwitch(kind))
         case .additionalCounter(let kind):
             bench.add(kind.rawValue, component: kind.makeComponent())
+        case .cd4070:
+            bench.add("CD4070", component: CD4070())
         case .timer555:
             bench.add("NE555", component: NE555())
         case .counter:
@@ -245,8 +258,12 @@ struct ComponentLibraryView: View {
             bench.add("Logic Input", component: WorkbenchSwitch(showsValue: true))
         case .clock:
             bench.add("Clock", component: WorkbenchClock())
+        case .oscillatorDIP8:
+            bench.add("CXO_DIP8", component: CXO_DIP8())
         case .led:
             bench.add("LED", component: WorkbenchLED())
+        case .led3mm:
+            bench.add("LED_D3.0mm", component: LED3mm())
         }
         if let id = bench.parts.last?.id, id != previousID { placeNewPart(id) }
         dismiss()

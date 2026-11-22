@@ -93,6 +93,25 @@ struct KiCadSymbol {
         return Self(pins: elements, body: body, pinNumbers: [1, 2])
     }()
 
+    static let led3mm = Self(
+        body: CGRect(x: -2.54, y: -5.08, width: 5.08, height: 7.62),
+        markings: [
+            [CGPoint(x: -2.54, y: -2.54), CGPoint(x: -2.54, y: 2.54)],
+            [CGPoint(x: -2.54, y: 0), CGPoint(x: 2.54, y: -2.54),
+             CGPoint(x: 2.54, y: 2.54), CGPoint(x: -2.54, y: 0)],
+            [CGPoint(x: -1.27, y: -3.18), CGPoint(x: -3.81, y: -5.72),
+             CGPoint(x: -2.54, y: -5.72), CGPoint(x: -3.81, y: -5.72), CGPoint(x: -3.81, y: -4.45)],
+            [CGPoint(x: 1.27, y: -3.18), CGPoint(x: -1.27, y: -5.72),
+             CGPoint(x: 0, y: -5.72), CGPoint(x: -1.27, y: -5.72), CGPoint(x: -1.27, y: -4.45)]
+        ],
+        terminals: [
+            Terminal(id: 1, name: "K", style: "line", position: CGPoint(x: -7.62, y: 0),
+                     inward: CGVector(dx: 1, dy: 0), length: 5.08),
+            Terminal(id: 2, name: "A", style: "line", position: CGPoint(x: 7.62, y: 0),
+                     inward: CGVector(dx: -1, dy: 0), length: 5.08)
+        ]
+    )
+
     static let diode1N4148: Self? = {
         guard let elements = deviceElements("1N4148", library: "Diode") else { return nil }
         let markings = elements.filter { $0[0] == "polyline" }.compactMap {
@@ -148,13 +167,13 @@ struct KiCadSymbol {
         }
     )
 
-    private init(body: CGRect, terminals: [Terminal]) {
+    private init(body: CGRect, polygon: [CGPoint] = [], markings: [[CGPoint]] = [], terminals: [Terminal]) {
         self.body = body
         self.terminals = terminals
         isCircular = false
         gateOutline = nil
-        polygon = []
-        markings = []
+        self.polygon = polygon
+        self.markings = markings
         filledMarkings = []
     }
 
@@ -170,6 +189,21 @@ struct KiCadSymbol {
             return (kind, Self(body: body, terminals: terminals))
         }
     )
+
+    static func fallback(pins: [Pin]) -> Self {
+        let left = pins.filter { $0.direction != .output }
+        let right = pins.filter { $0.direction == .output }
+        let rowCount = max(left.count, right.count)
+        let body = CGRect(x: -12.7, y: -2.54, width: 25.4, height: Double(rowCount + 1) * 2.54)
+        let terminals = [(left, -17.78, 1.0), (right, 17.78, -1.0)].flatMap { pins, x, direction in
+            pins.enumerated().map { row, pin in
+                Terminal(id: pin.number, name: pin.name, style: "line",
+                         position: CGPoint(x: x, y: Double(row) * 2.54),
+                         inward: CGVector(dx: direction, dy: 0), length: 5.08)
+            }
+        }
+        return Self(body: body, terminals: terminals)
+    }
 
     private static func counterSymbol(_ chip: any PoweredChip) -> Self {
         let inputs = chip.pins.values.filter { $0.direction == .input }.sorted { $0.number < $1.number }
@@ -201,6 +235,20 @@ struct KiCadSymbol {
         return Self(body: CGRect(x: -7.62, y: -15.24, width: 15.24, height: 30.48), terminals: terminals)
     }
 
+    static let oscillatorDIP8 = Self(
+        body: CGRect(x: -7.62, y: -5.08, width: 15.24, height: 10.16),
+        terminals: [
+            Terminal(id: 1, name: "EN", style: "line", position: CGPoint(x: -12.7, y: 0),
+                     inward: CGVector(dx: 1, dy: 0), length: 5.08),
+            Terminal(id: 4, name: "GND", style: "line", position: CGPoint(x: 0, y: 10.16),
+                     inward: CGVector(dx: 0, dy: -1), length: 5.08),
+            Terminal(id: 5, name: "OUT", style: "line", position: CGPoint(x: 12.7, y: 0),
+                     inward: CGVector(dx: -1, dy: 0), length: 5.08),
+            Terminal(id: 8, name: "VCC", style: "line", position: CGPoint(x: 0, y: -10.16),
+                     inward: CGVector(dx: 0, dy: 1), length: 5.08)
+        ]
+    )
+
     static let ne555 = rectangularSymbol(
         elements: deviceElements("NE555P", library: "Timer"), pinNumbers: Array(1...8)
     )
@@ -226,10 +274,36 @@ struct KiCadSymbol {
         pinNumbers: (MAN72A.segmentPins + MAN72A.commonPins).sorted()
     )
 
-    static let man74a = rectangularSymbol(
-        elements: deviceElements("MAN74A", library: "Display_Character")?.filter { $0[1] != "no_connect" },
-        pinNumbers: (MAN74A.segmentPins + MAN74A.commonPins).sorted()
-    )
+    static let man74a: Self = {
+        let display = MAN74A()
+        let step: CGFloat = 1.27
+        let body = CGRect(x: -4 * step, y: -10 * step, width: 10 * step, height: 20 * step)
+        let rows: [CGFloat] = [-8, -6, -4, -2, 0, 2, 4, 8]
+        let segments = zip(display.segmentNumbers, rows).map { number, row in
+            Terminal(id: number, name: display.pins[number]!.name, style: "line",
+                     position: CGPoint(x: -6 * step, y: row * step),
+                     inward: CGVector(dx: 1, dy: 0), length: 2 * step)
+        }
+        let commons = zip(display.commonNumbers, [-2 * step, 4 * step]).map { number, x in
+            Terminal(id: number, name: display.pins[number]!.name, style: "line",
+                     position: CGPoint(x: x, y: 12 * step),
+                     inward: CGVector(dx: 0, dy: -1), length: 2 * step)
+        }
+        return Self(body: body, terminals: segments + commons)
+    }()
+
+    static let man74aSchematic: Self = {
+        let step: CGFloat = 1.27
+        let body = man74a.body.insetBy(dx: step, dy: 0).offsetBy(dx: -step, dy: 0)
+        let segments = man74a.terminals.filter { MAN74A.segmentPins.contains($0.id) }
+        let commonPins = man74a.terminals.filter { MAN74A.commonPins.contains($0.id) }
+        let commons = zip(commonPins.reversed(), [6, 8]).map { pin, row in
+            Terminal(id: pin.id, name: pin.name, style: pin.style,
+                     position: CGPoint(x: body.maxX + 2 * step, y: CGFloat(row) * step),
+                     inward: CGVector(dx: -1, dy: 0), length: 2 * step)
+        }
+        return Self(body: body, terminals: segments + commons)
+    }()
 
     private static func rectangularSymbol(elements: [KiCadExpression]?, pinNumbers: [Int]) -> Self? {
         guard let elements, let rectangle = elements.first(where: { $0[0] == "rectangle" }),
@@ -249,6 +323,7 @@ struct KiCadSymbol {
     )
 
     private static func loadUnits(_ kind: MultiUnitChip) -> [Int: Self] {
+        if kind == .xor { return xorUnits() }
         guard let symbol = installedSymbol(kind.rawValue) else { return [:] }
         var units: [Int: Self] = [:]
         for unit in kind.allUnits {
@@ -267,6 +342,54 @@ struct KiCadSymbol {
                 : loadUnit(expression, pinNumbers: unit.pinNumbers)
         }
         return units
+    }
+
+    private static func xorUnits() -> [Int: Self] {
+        let step = 1.27
+        func point(_ x: Double, _ y: Double) -> CGPoint {
+            CGPoint(x: x * step, y: y * step)
+        }
+
+        func inputFace(at y: Double) -> Double {
+            return -3.5 + 1.6 * (1 - y * y / 9)
+        }
+        let face = (0...24).map { index -> CGPoint in
+            let y = Double(index) / 4 - 3
+            return point(inputFace(at: y), y)
+        }
+        // The reference has flat shoulders and two arcs meeting at the output.
+        let lowerArc = (0...12).map { index -> CGPoint in
+            let t = Double(index) / 12
+            let u = 1 - t
+            return point(-u * u + 4.4 * u * t + 3.5 * t * t, 3 * (1 - t * t))
+        }
+        let upperArc = lowerArc.reversed().dropFirst().map { CGPoint(x: $0.x, y: -$0.y) }
+        let extraCurve = face.map { CGPoint(x: $0.x - step / 2, y: $0.y) }
+        var symbols = Dictionary(uniqueKeysWithValues: QuadGate.allCases.map { gate in
+            let pins = gate.terminals
+            return (gate.rawValue, Self(
+                body: CGRect(x: -4 * step, y: -3 * step, width: 7.5 * step, height: 6 * step),
+                polygon: face + lowerArc + upperArc,
+                markings: [extraCurve],
+                terminals: [
+                    Terminal(id: pins.inputA, name: "", style: "line", position: point(-7, -2),
+                             inward: CGVector(dx: 1, dy: 0), length: (7 + inputFace(at: 2)) * step),
+                    Terminal(id: pins.inputB, name: "", style: "line", position: point(-7, 2),
+                             inward: CGVector(dx: 1, dy: 0), length: (7 + inputFace(at: 2)) * step),
+                    Terminal(id: pins.output, name: "", style: "line", position: point(7, 0),
+                             inward: CGVector(dx: -1, dy: 0), length: 3.5 * step)
+                ]))
+        })
+        let supplyPins = MultiUnitChip.xor.powerUnit
+        symbols[supplyPins.id] = Self(
+            body: CGRect(x: -5 * step, y: -2 * step, width: 10 * step, height: 4 * step),
+            terminals: [
+                Terminal(id: 14, name: "VDD", style: "line", position: point(-7, 0),
+                         inward: CGVector(dx: 1, dy: 0), length: 2 * step),
+                Terminal(id: 7, name: "GND", style: "line", position: point(7, 0),
+                         inward: CGVector(dx: -1, dy: 0), length: 2 * step)
+            ])
+        return symbols
     }
 
     private static func loadORUnit(_ expression: KiCadExpression, pinNumbers: [Int]) -> Self? {

@@ -1,3 +1,4 @@
+import Foundation
 import CoreGraphics
 import Dispatch
 import Observation
@@ -15,6 +16,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     case and = "4081"
     case nand = "4011"
     case or = "4071"
+    case xor = "4070"
     case jk = "4027"
     case inverter = "40106"
     case dualBCD = "4518"
@@ -28,6 +30,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         case .and: "AND Gate"
         case .nand: "NAND Gate"
         case .or: "OR Gate"
+        case .xor: "XOR Gate"
         case .jk: "JK Flip-Flop"
         case .inverter: "Schmitt Inverter"
         case .dualBCD: "Dual BCD Counter"
@@ -40,6 +43,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
         case .and: CD4081()
         case .nand: CD4011()
         case .or: CD4071()
+        case .xor: CD4070()
         case .jk: CD4027()
         case .inverter: CD40106()
         case .dualBCD: DualCounter(.bcd)
@@ -56,7 +60,7 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
 
     var units: [ChipUnit] {
         switch self {
-        case .and, .nand, .or: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
+        case .and, .nand, .or, .xor: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
         case .jk, .dualBCD, .dualBinary: [ChipUnit(id: 1, pinNumbers: Array(1...7)), ChipUnit(id: 2, pinNumbers: Array(9...15))]
         case .inverter:
             CD40106.gatePins.enumerated().map { index, pair in
@@ -90,28 +94,49 @@ struct WorkbenchPart: Identifiable {
     let unitPlacement: ChipUnitPlacement?
     let chipNumber: Int?
 
+    let designation: String?
     let importedReference: String?
     let importedSymbol: ImportedSymbol?
 
     init(id: Int, name: String, component: any LogicComponent, unitPlacement: ChipUnitPlacement?,
-         chipNumber: Int?, importedReference: String? = nil, importedSymbol: ImportedSymbol? = nil) {
+         chipNumber: Int?, importedReference: String? = nil, importedSymbol: ImportedSymbol? = nil,
+         designation: String? = nil) {
         self.id = id
         self.name = name
         self.component = component
         self.unitPlacement = unitPlacement
         self.chipNumber = chipNumber
+        self.designation = designation
         self.importedReference = importedReference
         self.importedSymbol = importedSymbol
     }
 
-    var reference: String? {
-        if let importedReference { return importedReference + (unitPlacement?.unit.letter ?? "") }
+    var referenceBase: String? {
+        if let designation { return designation }
+        if let importedReference { return importedReference }
+        if let unitPlacement { return "U\(unitPlacement.packageID)" }
+        if let chipNumber { return "U\(chipNumber)" }
         if component is PinHeader { return "J\(id)" }
         if component is Capacitor { return "C\(id)" }
         if component is Resistor { return "R\(id)" }
-        if component is Diode1N4148 { return "D\(id)" }
+        if component is Diode1N4148 || component is LED3mm { return "D\(id)" }
         if component is NPN2N3904 { return "Q\(id)" }
-        return unitPlacement?.reference ?? chipNumber.map { "U\($0)" }
+        return nil
+    }
+
+    var reference: String? {
+        referenceBase.map { $0 + (unitPlacement?.unit.letter ?? "") }
+    }
+
+    var referencePrefix: String {
+        let prefix = referenceBase?.prefix(while: { $0.isLetter || $0 == "#" }) ?? ""
+        if prefix.contains(where: \.isLetter) { return String(prefix).uppercased() }
+        if component is WorkbenchSwitch { return "SW" }
+        if component is WorkbenchLED { return "D" }
+        if component is WorkbenchClock { return "X" }
+        if component is WorkbenchPower { return "#PWR" }
+        if component is WorkbenchPullUp { return "R" }
+        return "U"
     }
 
     var label: String {
@@ -134,6 +159,12 @@ struct SchematicMark: Codable {
     var text: String? = nil
 }
 
+enum WireColour: String, CaseIterable, Codable {
+    case black, grey, brown, red, orange, yellow, green, blue, violet
+
+    var title: String { rawValue.capitalized }
+}
+
 struct WorkbenchWire: Identifiable, Codable {
     let id: Int
     let first: WorkbenchTerminal
@@ -142,15 +173,28 @@ struct WorkbenchWire: Identifiable, Codable {
     let netName: String?
     enum SourceRoute: String, Codable { case straight, alias, pinAttachment }
     let sourceRoute: SourceRoute?
+    var colour: WireColour
 
     init(id: Int, first: WorkbenchTerminal, second: WorkbenchTerminal, bends: [CGPoint], netName: String? = nil,
-         sourceRoute: SourceRoute? = nil) {
+         sourceRoute: SourceRoute? = nil, colour: WireColour = .green) {
         self.id = id
         self.first = first
         self.second = second
         self.bends = bends
         self.netName = netName
         self.sourceRoute = sourceRoute
+        self.colour = colour
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(Int.self, forKey: .id)
+        first = try values.decode(WorkbenchTerminal.self, forKey: .first)
+        second = try values.decode(WorkbenchTerminal.self, forKey: .second)
+        bends = try values.decode([CGPoint].self, forKey: .bends)
+        netName = try values.decodeIfPresent(String.self, forKey: .netName)
+        sourceRoute = try values.decodeIfPresent(SourceRoute.self, forKey: .sourceRoute)
+        colour = try values.decodeIfPresent(WireColour.self, forKey: .colour) ?? .green
     }
 
     static let gridSpacing: CGFloat = 10
@@ -249,28 +293,50 @@ final class WorkbenchSwitch: LogicComponent {
     func evaluate() {}
 }
 
-final class WorkbenchClock: LogicComponent {
+class WorkbenchClock: LogicComponent {
     let pins: [Int: Pin]
     let output: Pin
     private(set) var phase: LogicState = .low
 
-    init() {
-        output = Pin(number: 1, name: "OUT", direction: .output)
-        pins = [output.number: output]
+    var defaultFrequency: ClockFrequency { ClockFrequency(value: 1, unit: .hertz) }
+
+    init(outputNumber: Int = 1, inputs: [Pin] = []) {
+        output = Pin(number: outputNumber, name: "OUT", direction: .output)
+        pins = Dictionary(uniqueKeysWithValues: (inputs + [output]).map { ($0.number, $0) })
         output.drive(.low)
     }
 
     func advance() {
         phase = phase.inverted
-        output.drive(phase)
+        evaluate()
     }
 
     func stop() {
         phase = .low
-        output.drive(.low)
+        evaluate()
     }
 
-    func evaluate() {}
+    func evaluate() { output.drive(phase) }
+}
+
+final class CXO_DIP8: WorkbenchClock, PoweredChip {
+    let supplyPins = (vdd: 8, vss: 4)
+    private let enable = Pin(number: 1, name: "EN", direction: .input)
+
+    init() {
+        super.init(outputNumber: 5, inputs: [
+            enable, Pin(number: 4, name: "GND", direction: .power),
+            Pin(number: 8, name: "VCC", direction: .power)
+        ])
+    }
+
+    override var defaultFrequency: ClockFrequency { ClockFrequency(value: 1, unit: .megahertz) }
+
+    var isEnabled: Bool { enable.state == .high || enable.state == .highImpedance }
+
+    override func evaluate() {
+        output.drive(isEnabled ? phase : enable.state == .low ? .highImpedance : .undefined)
+    }
 }
 
 enum PowerRail: String, Codable {
@@ -315,10 +381,27 @@ final class WorkbenchLED: LogicComponent {
 final class Workbench {
     private(set) var parts: [WorkbenchPart] = []
     private(set) var wires: [WorkbenchWire] = []
+    private(set) var illuminatedLEDs: Set<Int> = []
     private(set) var readings: [WorkbenchTerminal: LogicState] = [:]
     private(set) var isStable = true
     private(set) var powerMode: PowerMode = .automatic
     private(set) var powerStates: [Int: ChipPowerState] = [:]
+    var hoveredTerminal: WorkbenchTerminal?
+
+    func isTerminalConnected(_ terminal: WorkbenchTerminal) -> Bool {
+        wires.contains { $0.first == terminal || $0.second == terminal }
+    }
+
+    func showsOpenPinMarker(_ terminal: WorkbenchTerminal, explicitNoConnect: Bool = false) -> Bool {
+        !explicitNoConnect && !isTerminalConnected(terminal)
+    }
+
+    var componentAppearance: ComponentAppearance = .schematic
+    private var chosenWireColours: [ComponentAppearance: WireColour] = [:]
+    var newWireColour: WireColour {
+        get { chosenWireColours[componentAppearance] ?? componentAppearance.defaultWireColour }
+        set { chosenWireColours[componentAppearance] = newValue }
+    }
     var wiringEnabled = true
     private(set) var selectedTerminal: WorkbenchTerminal?
     private(set) var selectedWireID: Int?
@@ -328,6 +411,7 @@ final class Workbench {
     private(set) var scopeProbes: [Int: ScopeProbe] = [:]
     @ObservationIgnored private var netsByTerminal: [WorkbenchTerminal: Net] = [:]
     @ObservationIgnored private var scopeReaders: [Int: (Bool) -> ScopeValue] = [:]
+    @ObservationIgnored private var pulseReaders: [Int: () -> LogicState] = [:]
     private struct RunningClock {
         let source: WorkbenchClock
         let startedAt: Double
@@ -340,7 +424,12 @@ final class Workbench {
     private let clockOrigin = DispatchTime.now().uptimeNanoseconds
     @ObservationIgnored private let timeSource: (() -> Double)?
 
-    init(timeSource: (() -> Double)? = nil) { self.timeSource = timeSource }
+    init(timeSource: (() -> Double)? = nil) {
+        self.timeSource = timeSource
+        let initialRevision = UUID()
+        revision = initialRevision
+        document = Document(url: nil, savedRevision: initialRevision)
+    }
     @ObservationIgnored private var runningClocks: [RunningClock] = []
     private(set) var hasRunningClocks = false
     private(set) var clockIsBehind = false
@@ -361,7 +450,45 @@ final class Workbench {
     private(set) var clockFrequencies: [Int: ClockFrequency] = [:]
     private(set) var ledColours: [Int: LEDIndicatorSymbol.LampColour] = [:]
 
+    // Undo can cross a document boundary. Keep each document's save point and
+    // destination with its history so Undo cannot redirect a save to another file.
+    @Observable
+    fileprivate final class Document {
+        var url: URL?
+        var savedRevision: UUID
+
+        init(url: URL?, savedRevision: UUID) {
+            self.url = url
+            self.savedRevision = savedRevision
+        }
+    }
+
+    @ObservationIgnored private var pendingPlacementID: Int?
+    private var revision: UUID
+    private var document: Document
+    var circuitRevision: UUID { revision }
+    var documentURL: URL? { document.url }
+    var isDirty: Bool { revision != document.savedRevision }
+    var hasCircuit: Bool { !parts.isEmpty || !schematicMarks.isEmpty }
+
+    private func startDocument(at url: URL? = nil, clean: Bool) {
+        document = Document(url: url, savedRevision: clean ? revision : UUID())
+    }
+
+    func save(to url: URL) throws {
+        let data = try WorkbenchArchive(bench: self).encoded()
+        let accessing = url.startAccessingSecurityScopedResource()
+        defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+        try data.write(to: url, options: .atomic)
+        pendingPlacementID = nil
+        document.url = url
+        document.savedRevision = revision
+    }
+
     private struct Edit {
+        let revision: UUID
+        let document: Document
+        let switches: [(WorkbenchSwitch, Bool)]
         let parts: [WorkbenchPart]
         let powerMode: PowerMode
         let wires: [WorkbenchWire]
@@ -379,13 +506,23 @@ final class Workbench {
         let nextWireID: Int
     }
 
-    private var undoHistory: [Edit] = []
-    private var redoHistory: [Edit] = []
+    private struct HistoryEntry {
+        let edit: Edit
+        let wireColourOnly: Bool
+    }
+
+    private var undoHistory: [HistoryEntry] = []
+    private var redoHistory: [HistoryEntry] = []
     var canUndo: Bool { !undoHistory.isEmpty }
     var canRedo: Bool { !redoHistory.isEmpty }
 
     private var currentEdit: Edit {
-        Edit(parts: parts, powerMode: powerMode, wires: wires, junctions: junctions, schematicMarks: schematicMarks, positions: positions, rotations: rotations,
+        Edit(revision: revision, document: document,
+             switches: parts.compactMap { part in
+                 guard let source = part.component as? WorkbenchSwitch else { return nil }
+                 return (source, source.isOn)
+             },
+             parts: parts, powerMode: powerMode, wires: wires, junctions: junctions, schematicMarks: schematicMarks, positions: positions, rotations: rotations,
              clockFrequencies: clockFrequencies, ledColours: ledColours,
              resistances: parts.compactMap { part in
                  guard let resistor = part.component as? Resistor else { return nil }
@@ -398,25 +535,42 @@ final class Workbench {
              scopeProbes: scopeProbes, nextPartID: nextPartID, nextChipNumber: nextChipNumber, nextWireID: nextWireID)
     }
 
-    private func recordEdit() {
-        undoHistory.append(currentEdit)
+    private func recordEdit(wireColourOnly: Bool = false) {
+        pendingPlacementID = nil
+        undoHistory.append(HistoryEntry(edit: currentEdit, wireColourOnly: wireColourOnly))
         if undoHistory.count > 100 { undoHistory.removeFirst() }
         redoHistory.removeAll()
+        revision = UUID()
     }
 
     func undo() {
-        guard let edit = undoHistory.popLast() else { return }
-        redoHistory.append(currentEdit)
-        restore(edit)
+        guard let entry = undoHistory.popLast() else { return }
+        redoHistory.append(HistoryEntry(edit: currentEdit, wireColourOnly: entry.wireColourOnly))
+        restoreHistory(entry)
     }
 
     func redo() {
-        guard let edit = redoHistory.popLast() else { return }
-        undoHistory.append(currentEdit)
-        restore(edit)
+        guard let entry = redoHistory.popLast() else { return }
+        undoHistory.append(HistoryEntry(edit: currentEdit, wireColourOnly: entry.wireColourOnly))
+        restoreHistory(entry)
+    }
+
+    private func restoreHistory(_ entry: HistoryEntry) {
+        if entry.wireColourOnly {
+            // Preserve live simulation and scope acquisition for cosmetic edits.
+            revision = entry.edit.revision
+            document = entry.edit.document
+            wires = entry.edit.wires
+        } else {
+            restore(entry.edit)
+        }
     }
 
     private func restore(_ edit: Edit) {
+        pendingPlacementID = nil
+        revision = edit.revision
+        document = edit.document
+        for (source, isOn) in edit.switches where source.isOn != isOn { source.toggle() }
         removeClocks { source in !edit.parts.contains { $0.component === source } }
         cancelWire()
         selectedWireID = nil
@@ -450,43 +604,270 @@ final class Workbench {
     }
 
     func placeNewPart(_ id: Int, at position: CGPoint) {
-        // The insertion is already one undo operation.
+        guard parts.contains(where: { $0.id == id }), positions[id] != position else { return }
+        // Initial placement belongs to the insertion's undo operation.
+        if pendingPlacementID != id { recordEdit() }
+        pendingPlacementID = nil
         positions[id] = position
     }
 
     func movePart(_ id: Int, from origin: CGPoint, to position: CGPoint) {
-        guard origin != position else { return }
+        guard parts.contains(where: { $0.id == id }), (positions[id] ?? origin) != position else { return }
         recordEdit()
         positions[id] = position
     }
 
-    func rotatePart(_ id: Int, by steps: Int) {
+    struct Movement {
+        let parts: Set<Int>
+        let junctions: Set<Int>
+        let delta: CGPoint
+
+        func includes(_ terminal: WorkbenchTerminal) -> Bool {
+            terminal.isJunction ? junctions.contains(terminal.pinNumber) : parts.contains(terminal.partID)
+        }
+
+        func translate(_ point: CGPoint) -> CGPoint {
+            CGPoint(x: point.x + delta.x, y: point.y + delta.y)
+        }
+
+        func wire(_ wire: WorkbenchWire) -> WorkbenchWire {
+            guard includes(wire.first) && includes(wire.second) else { return wire }
+            return WorkbenchWire(id: wire.id, first: wire.first, second: wire.second,
+                                 bends: wire.bends.map(translate), netName: wire.netName, sourceRoute: wire.sourceRoute, colour: wire.colour)
+        }
+    }
+
+    func movement(of ids: Set<Int>, by translation: CGSize) -> Movement {
+        let movingJunctions = junctionGroups().reduce(into: Set<Int>()) { moving, group in
+            let attached = group.endpoints.filter { !$0.isJunction }
+            let selected = Set(attached.filter { ids.contains($0.partID) })
+            if !selected.isEmpty && selected.count == attached.count {
+                moving.formUnion(group.junctions)
+            } else {
+                for wire in internalWires(in: group, joining: selected) {
+                    for endpoint in [wire.first, wire.second] where endpoint.isJunction {
+                        moving.insert(endpoint.pinNumber)
+                    }
+                }
+            }
+        }
+        return Movement(parts: ids, junctions: movingJunctions,
+                        delta: WorkbenchWire.snap(CGPoint(x: translation.width, y: translation.height)))
+    }
+
+    func moveParts(_ movement: Movement) {
+        guard movement.delta != .zero, parts.contains(where: { movement.parts.contains($0.id) }) else { return }
         recordEdit()
-        rotations[id] = (rotations[id, default: 0] + steps + 4) % 4
+        for part in parts where movement.parts.contains(part.id) {
+            positions[part.id] = movement.translate(positions[part.id] ?? CGPoint(x: 20, y: 20))
+        }
+        for id in movement.junctions {
+            if let point = junctions[id] { junctions[id] = movement.translate(point) }
+        }
+        wires = wires.map(movement.wire)
+    }
+
+    private struct JunctionGroup {
+        var junctions: Set<Int> = []
+        var endpoints: Set<WorkbenchTerminal> = []
+        var wires: [WorkbenchWire] = []
+    }
+
+    private func junctionGroups() -> [JunctionGroup] {
+        var incident: [Int: [WorkbenchWire]] = [:]
+        for wire in wires {
+            for endpoint in [wire.first, wire.second] where endpoint.isJunction {
+                incident[endpoint.pinNumber, default: []].append(wire)
+            }
+        }
+        var visited: Set<Int> = []
+        var groups: [JunctionGroup] = []
+        for id in incident.keys where visited.insert(id).inserted {
+            var pending = [id]
+            var group = JunctionGroup()
+            var wireIDs: Set<Int> = []
+            while let junction = pending.popLast() {
+                group.junctions.insert(junction)
+                for wire in incident[junction, default: []] where wireIDs.insert(wire.id).inserted {
+                    group.wires.append(wire)
+                    for endpoint in [wire.first, wire.second] {
+                        group.endpoints.insert(endpoint)
+                        if endpoint.isJunction && visited.insert(endpoint.pinNumber).inserted {
+                            pending.append(endpoint.pinNumber)
+                        }
+                    }
+                }
+            }
+            groups.append(group)
+        }
+        return groups
+    }
+
+    private func internalWires(in group: JunctionGroup, joining selected: Set<WorkbenchTerminal>) -> [WorkbenchWire] {
+        guard selected.count >= 2 else { return [] }
+        var internalWires = group.wires.filter { wire in
+            [wire.first, wire.second].allSatisfy { $0.isJunction || selected.contains($0) }
+        }
+        // Drop dangling branches left after cutting external pins.
+        while true {
+            var degrees: [WorkbenchTerminal: Int] = [:]
+            for wire in internalWires {
+                degrees[wire.first, default: 0] += 1
+                degrees[wire.second, default: 0] += 1
+            }
+            let leaves = Set(degrees.keys.filter { $0.isJunction && degrees[$0] == 1 })
+            guard !leaves.isEmpty else { return internalWires }
+            internalWires.removeAll { leaves.contains($0.first) || leaves.contains($0.second) }
+        }
+    }
+
+    func copyParts(_ ids: Set<Int>) throws -> WorkbenchArchive {
+        var internalWireIDs: Set<Int> = []
+        for group in junctionGroups() {
+            let selected = group.endpoints.filter { !$0.isJunction && ids.contains($0.partID) }
+            internalWireIDs.formUnion(internalWires(in: group, joining: selected).map(\.id))
+        }
+        let copiedWires = wires.filter {
+            internalWireIDs.contains($0.id) || (ids.contains($0.first.partID) && ids.contains($0.second.partID))
+        }
+        let usedJunctions = Set(copiedWires.flatMap { [$0.first, $0.second] }
+            .filter(\.isJunction).map(\.pinNumber))
+        return try WorkbenchArchive(bench: self, partIDs: ids, wires: copiedWires,
+                                    junctions: junctions.filter { usedJunctions.contains($0.key) })
+    }
+
+    private var reservedDesignations: Set<String> {
+        var reserved: Set<String> = []
+        for part in parts {
+            guard let base = part.referenceBase?.uppercased() else { continue }
+            reserved.insert(base)
+            let prefix = part.referencePrefix
+            let digits = base.dropFirst(prefix.count).prefix(while: \.isNumber)
+            if let number = Int(digits) { reserved.insert(prefix + String(number)) }
+        }
+        return reserved
+    }
+
+    func reference(for placement: ChipUnitPlacement) -> String {
+        if let base = parts.first(where: { $0.unitPlacement?.packageID == placement.packageID })?.referenceBase {
+            return base + placement.unit.letter
+        }
+        let preferred = "U\(placement.packageID)"
+        var reserved = reservedDesignations
+        let base = reserved.contains(preferred) ? Self.nextDesignation(prefix: "U", reserved: &reserved) : preferred
+        return base + placement.unit.letter
+    }
+
+    private static func nextDesignation(prefix: String, reserved: inout Set<String>) -> String {
+        var number = 1
+        while !reserved.insert(prefix + String(number)).inserted { number += 1 }
+        return prefix + String(number)
+    }
+
+    @discardableResult
+    func pasteParts(_ archive: WorkbenchArchive, by translation: CGSize) throws -> Set<Int> {
+        let copied = try archive.makeCircuit()
+        guard !copied.parts.isEmpty else { return [] }
+        let movement = Movement(parts: [], junctions: [],
+                                delta: WorkbenchWire.snap(CGPoint(x: translation.width, y: translation.height)))
+        var reserved = reservedDesignations
+        var packages: [Int: (id: Int, reference: String)] = [:]
+        var partIDs: [Int: Int] = [:]
+        var junctionIDs: [Int: Int] = [:]
+        recordEdit()
+        cancelWire()
+        selectedWireID = nil
+
+        for part in copied.parts {
+            let placement: ChipUnitPlacement?
+            let designation: String
+            if let unit = part.unitPlacement {
+                let package: (id: Int, reference: String)
+                if let existing = packages[unit.packageID] {
+                    package = existing
+                } else {
+                    package = (nextChipNumber, Self.nextDesignation(prefix: part.referencePrefix, reserved: &reserved))
+                    packages[unit.packageID] = package
+                    nextChipNumber += 1
+                }
+                placement = ChipUnitPlacement(kind: unit.kind, packageID: package.id, unit: unit.unit)
+                designation = package.reference
+            } else {
+                placement = nil
+                designation = Self.nextDesignation(prefix: part.referencePrefix, reserved: &reserved)
+            }
+            let id = nextPartID
+            nextPartID += 1
+            partIDs[part.id] = id
+            parts.append(WorkbenchPart(id: id, name: part.name, component: part.component, unitPlacement: placement,
+                                       chipNumber: nil, importedSymbol: part.importedSymbol, designation: designation))
+            positions[id] = movement.translate(copied.positions[part.id] ?? CGPoint(x: 20, y: 20))
+            rotations[id] = copied.rotations[part.id]
+            clockFrequencies[id] = copied.frequencies[part.id]
+            ledColours[id] = copied.colours[part.id]
+        }
+        for (oldID, point) in archive.junctions.sorted(by: { $0.key < $1.key }) {
+            junctionIDs[oldID] = nextWireID
+            junctions[nextWireID] = movement.translate(point)
+            nextWireID += 1
+        }
+        func remap(_ endpoint: WorkbenchTerminal) -> WorkbenchTerminal? {
+            if endpoint.isJunction { return junctionIDs[endpoint.pinNumber].map(WorkbenchTerminal.junction) }
+            return partIDs[endpoint.partID].map { WorkbenchTerminal(partID: $0, pinNumber: endpoint.pinNumber) }
+        }
+        for wire in copied.wires {
+            guard let first = remap(wire.first), let second = remap(wire.second) else { continue }
+            wires.append(WorkbenchWire(id: nextWireID, first: first, second: second,
+                                       bends: wire.bends.map(movement.translate), netName: wire.netName,
+                                       sourceRoute: wire.sourceRoute, colour: wire.colour))
+            nextWireID += 1
+        }
+        rebuildNets()
+        return Set(partIDs.values)
+    }
+
+    func rotatePart(_ id: Int, by steps: Int) {
+        guard parts.contains(where: { $0.id == id }), steps % 4 != 0 else { return }
+        recordEdit()
+        rotations[id] = (rotations[id, default: 0] + steps % 4 + 4) % 4
+    }
+
+    func clockFrequency(for id: Int, source: WorkbenchClock) -> ClockFrequency {
+        clockFrequencies[id] ?? source.defaultFrequency
     }
 
     func setClockFrequency(_ frequency: ClockFrequency, for id: Int) {
-        let current = clockFrequencies[id] ?? ClockFrequency(value: 1, unit: .hertz)
-        guard current != frequency else { return }
+        guard let source = parts.first(where: { $0.id == id })?.component as? WorkbenchClock,
+              !(source is CXO_DIP8) || frequency.unit != .hertz,
+              frequency.hertz.isFinite, frequency.hertz > 0, 0.5 / frequency.hertz < Double(Int64.max),
+              clockFrequency(for: id, source: source) != frequency else { return }
         recordEdit()
         clockFrequencies[id] = frequency
+        if source is CXO_DIP8 {
+            synchronizeOscillators(oscillatorParts, at: clockTime)
+            updateClockStatus()
+        }
     }
 
     func setLEDColour(_ colour: LEDIndicatorSymbol.LampColour, for id: Int) {
-        guard colour != ledColours[id, default: .green] else { return }
+        guard parts.contains(where: { $0.id == id && $0.component is WorkbenchLED }),
+              colour != ledColours[id, default: .green] else { return }
         recordEdit()
         ledColours[id] = colour
     }
 
     func setResistance(_ value: Double, unit: ResistanceUnit, for resistor: Resistor) {
-        guard value != resistor.value || unit != resistor.unit else { return }
+        let ohms = value * unit.multiplier
+        guard ohms.isFinite, ohms > 0, parts.contains(where: { $0.component === resistor }),
+              value != resistor.value || unit != resistor.unit else { return }
         recordEdit()
         resistor.setResistance(value, unit: unit)
         settle()
     }
 
     func setCapacitance(_ value: Double, for capacitor: Capacitor) {
-        guard Capacitor.isValid(value, kind: capacitor.kind), value != capacitor.value else { return }
+        guard parts.contains(where: { $0.component === capacitor }),
+              Capacitor.isValid(value, kind: capacitor.kind), value != capacitor.value else { return }
         recordEdit()
         capacitor.setCapacitance(value)
         settle()
@@ -550,18 +931,32 @@ final class Workbench {
 
     private func insertPart(_ name: String, component: any LogicComponent, unitPlacement: ChipUnitPlacement?) {
         let chipNumber: Int?
-        if (component is any PoweredChip && unitPlacement == nil) || component is SevenSegmentDisplay {
+        if (component is any PoweredChip && !(component is CXO_DIP8) && unitPlacement == nil) || component is SevenSegmentDisplay {
             chipNumber = nextChipNumber
             nextChipNumber += 1
         } else {
             chipNumber = nil
         }
-        let importedReference = unitPlacement.flatMap { placement in
-            parts.first { $0.unitPlacement?.packageID == placement.packageID }?.importedReference
+        let package = unitPlacement.flatMap { placement in
+            parts.first { $0.unitPlacement?.packageID == placement.packageID }
         }
+        let candidate = WorkbenchPart(id: nextPartID, name: name, component: component,
+                                      unitPlacement: unitPlacement, chipNumber: chipNumber)
+        var reserved = reservedDesignations
+        let designation: String?
+        if component is CXO_DIP8 {
+            designation = Self.nextDesignation(prefix: "X", reserved: &reserved)
+        } else if let package {
+            designation = package.designation
+        } else if let preferred = candidate.referenceBase, reserved.contains(preferred.uppercased()) {
+            designation = Self.nextDesignation(prefix: candidate.referencePrefix, reserved: &reserved)
+        } else {
+            designation = nil
+        }
+        pendingPlacementID = nextPartID
         parts.append(WorkbenchPart(id: nextPartID, name: name, component: component,
                                    unitPlacement: unitPlacement, chipNumber: chipNumber,
-                                   importedReference: importedReference))
+                                   importedReference: package?.importedReference, designation: designation))
         nextPartID += 1
         engine.automaticallyPowerChips = powerMode == .automatic
         if !engine.components.contains(where: { $0 === component }) {
@@ -586,12 +981,12 @@ final class Workbench {
         }) else { return }
 
         recordEdit()
-        wires.append(WorkbenchWire(id: nextWireID, first: first, second: terminal, bends: bends))
+        wires.append(WorkbenchWire(id: nextWireID, first: first, second: terminal, bends: bends, colour: newWireColour))
         nextWireID += 1
         rebuildNets()
     }
 
-    func joinWire(_ id: Int, at point: CGPoint, before: [CGPoint], after: [CGPoint]) {
+    func joinWire(_ id: Int, at point: CGPoint, before: [CGPoint], after: [CGPoint], splitFraction: Double = 0.5) {
         guard let source = selectedTerminal, let index = wires.firstIndex(where: { $0.id == id }) else { return }
         let target = wires[index]
         let splitRoute = target.sourceRoute == .pinAttachment ? nil : target.sourceRoute
@@ -600,9 +995,19 @@ final class Workbench {
         let junctionID = nextWireID
         let endpoint = WorkbenchTerminal.junction(junctionID)
         junctions[junctionID] = point
-        wires[index] = WorkbenchWire(id: target.id, first: target.first, second: endpoint, bends: before, netName: target.netName, sourceRoute: splitRoute)
-        wires.append(WorkbenchWire(id: nextWireID, first: endpoint, second: target.second, bends: after, netName: target.netName, sourceRoute: splitRoute))
-        wires.append(WorkbenchWire(id: nextWireID + 1, first: source, second: endpoint, bends: pendingBends))
+        wires[index] = WorkbenchWire(id: target.id, first: target.first, second: endpoint, bends: before, netName: target.netName, sourceRoute: splitRoute, colour: target.colour)
+        wires.append(WorkbenchWire(id: nextWireID, first: endpoint, second: target.second, bends: after, netName: target.netName, sourceRoute: splitRoute, colour: target.colour))
+        wires.append(WorkbenchWire(id: nextWireID + 1, first: source, second: endpoint, bends: pendingBends, colour: newWireColour))
+        for (channel, probe) in scopeProbes {
+            guard case .wirePoint(let wireID, let fraction) = probe, wireID == id else { continue }
+            if fraction == splitFraction {
+                scopeProbes[channel] = .netPin(endpoint)
+            } else if fraction < splitFraction {
+                scopeProbes[channel] = .wirePoint(id: id, fraction: fraction / splitFraction)
+            } else {
+                scopeProbes[channel] = .wirePoint(id: nextWireID, fraction: (fraction - splitFraction) / (1 - splitFraction))
+            }
+        }
         nextWireID += 2
         cancelWire()
         rebuildNets()
@@ -621,6 +1026,12 @@ final class Workbench {
 
     func selectWire(_ id: Int?) {
         selectedWireID = id
+    }
+
+    func setWireColour(_ colour: WireColour, for id: Int) {
+        guard let index = wires.firstIndex(where: { $0.id == id }), wires[index].colour != colour else { return }
+        recordEdit(wireColourOnly: true)
+        wires[index].colour = colour
     }
 
     func removeSelectedWire() {
@@ -646,26 +1057,37 @@ final class Workbench {
             cancelWire()
         }
         parts.removeAll { ids.contains($0.id) }
+        let originalWires = wires
+        let affected = Set(wires.filter { ids.contains($0.first.partID) || ids.contains($0.second.partID) }
+            .flatMap { [$0.first, $0.second] }.filter(\.isJunction).map(\.pinNumber))
         wires.removeAll { ids.contains($0.first.partID) || ids.contains($0.second.partID) }
+        if !affected.isEmpty {
+            let orphans = Set(junctionGroups().filter {
+                !$0.junctions.isDisjoint(with: affected) && $0.endpoints.allSatisfy(\.isJunction)
+            }.flatMap { $0.wires.map(\.id) })
+            wires.removeAll { orphans.contains($0.id) }
+        }
         pruneJunctions()
         if !wires.contains(where: { $0.id == selectedWireID }) {
             selectedWireID = nil
         }
-        rebuildNets()
+        let remainingIDs = Set(wires.map(\.id))
+        rebuildNets(removedWires: originalWires.filter { !remainingIDs.contains($0.id) })
     }
 
     func removeWire(_ id: Int) {
-        guard wires.contains(where: { $0.id == id }) else { return }
+        guard let wire = wires.first(where: { $0.id == id }) else { return }
         recordEdit()
         if selectedWireID == id {
             selectedWireID = nil
         }
         wires.removeAll { $0.id == id }
         pruneJunctions()
-        rebuildNets()
+        rebuildNets(removedWires: [wire])
     }
 
-    func junctionDots(visible: [WorkbenchWire], pinContacts: [WorkbenchWire]) -> [CGPoint] {
+    func junctionDots(visible: [WorkbenchWire], pinContacts: [WorkbenchWire],
+                      at locations: [Int: CGPoint]? = nil) -> [CGPoint] {
         var branchCounts: [Int: Int] = [:]
         for wire in visible + pinContacts {
             for endpoint in [wire.first, wire.second] where endpoint.isJunction {
@@ -673,7 +1095,7 @@ final class Workbench {
             }
         }
         return branchCounts.compactMap { id, count in
-            count >= 3 ? junctions[id] : nil
+            count >= 3 ? (locations ?? junctions)[id] : nil
         }
     }
 
@@ -686,8 +1108,12 @@ final class Workbench {
     }
 
     func clear() {
-        guard !parts.isEmpty else { return }
+        guard hasCircuit || isDirty || documentURL != nil else { return }
         recordEdit()
+        startDocument(clean: true)
+        powerMode = .automatic
+        scope.clear()
+        scopeProbes.removeAll()
         removeClocks { _ in true }
         positions.removeAll()
         rotations.removeAll()
@@ -706,6 +1132,7 @@ final class Workbench {
     }
 
     func toggle(_ source: WorkbenchSwitch) {
+        if parts.contains(where: { $0.component === source }) { recordEdit() }
         source.toggle()
         settle()
     }
@@ -729,6 +1156,7 @@ final class Workbench {
     func serviceSimulation(until now: Double) {
         guard now.isFinite, now >= servicedTime else { return }
         let budgetDeadline = clockTime + 0.012
+        let oscillators = oscillatorParts
         var stable = true
         var batches = 0
         while servicedTime < now {
@@ -752,11 +1180,13 @@ final class Workbench {
             } else if !engine.hasTimingNetworks {
                 captureScope(at: servicedTime, stable: stable)
             }
+            synchronizeOscillators(oscillators, at: servicedTime)
             batches += 1
-            if batches >= 1 && clockTime >= budgetDeadline { break }
+            if batches >= 4_096 || clockTime >= budgetDeadline { break }
             if advance.elapsed == 0 && target > servicedTime { break }
         }
         isStable = stable
+        updateClockStatus()
         publishReadings()
         let behind = now - servicedTime > 0.1
         if behind != clockIsBehind { clockIsBehind = behind }
@@ -769,6 +1199,28 @@ final class Workbench {
             return true
         }
         updateClockStatus()
+    }
+
+    private var oscillatorParts: [(id: Int, source: CXO_DIP8)] {
+        parts.compactMap { part in
+            (part.component as? CXO_DIP8).map { (part.id, $0) }
+        }
+    }
+
+    private func synchronizeOscillators(_ oscillators: [(id: Int, source: CXO_DIP8)], at time: Double) {
+        for (id, oscillator) in oscillators {
+            let halfPeriod = 0.5 / clockFrequency(for: id, source: oscillator).hertz
+            let active = oscillator.isEnabled && (powerMode == .automatic || oscillator.powerState == .powered)
+            let index = runningClocks.firstIndex { $0.source === oscillator }
+            if let index, !active || runningClocks[index].halfPeriod != halfPeriod {
+                runningClocks.remove(at: index)
+            } else if index != nil {
+                continue
+            }
+            if active {
+                runningClocks.append(RunningClock(source: oscillator, startedAt: time, halfPeriod: halfPeriod))
+            }
+        }
     }
 
     private func updateClockStatus() {
@@ -786,10 +1238,11 @@ final class Workbench {
         settle()
     }
 
-    func open(_ archive: WorkbenchArchive) throws {
+    func open(_ archive: WorkbenchArchive, at url: URL? = nil) throws {
         let loaded = try archive.makeCircuit()
         recordEdit()
-        restore(Edit(parts: loaded.parts, powerMode: archive.savedPowerMode, wires: loaded.wires, junctions: archive.junctions,
+        startDocument(at: url, clean: true)
+        restore(Edit(revision: revision, document: document, switches: [], parts: loaded.parts, powerMode: archive.savedPowerMode, wires: loaded.wires, junctions: archive.junctions,
                      schematicMarks: archive.schematicMarks ?? [],
                      positions: loaded.positions, rotations: loaded.rotations,
                      clockFrequencies: loaded.frequencies, ledColours: loaded.colours, resistances: [], capacitances: [],
@@ -810,7 +1263,8 @@ final class Workbench {
                                      below: append ? bottom + 600 : 30,
                                      existingReferences: append ? Set(parts.compactMap(\.reference)) : [])
         recordEdit()
-        restore(Edit(parts: (append ? parts : []) + imported.parts,
+        if replacing { startDocument(clean: false) }
+        restore(Edit(revision: revision, document: document, switches: [], parts: (append ? parts : []) + imported.parts,
                      powerMode: append ? powerMode : .explicit,
                      wires: (append ? wires : []) + imported.wires,
                      junctions: (append ? junctions : [:]).merging(imported.junctions) { _, incoming in incoming },
@@ -831,7 +1285,11 @@ final class Workbench {
         return "\(part.label) · \(pin.name) (\(pin.number))"
     }
 
-    private func rebuildNets() {
+    func circuitNet(at terminal: WorkbenchTerminal) -> Net? {
+        netsByTerminal[terminal]
+    }
+
+    private func rebuildNets(removedWires: [WorkbenchWire] = []) {
         servicedTime = max(servicedTime, clockTime)
         engine = SimulationEngine()
         engine.automaticallyPowerChips = powerMode == .automatic
@@ -872,6 +1330,18 @@ final class Workbench {
             }
             engine.addNet(net)
         }
+        for (channel, probe) in scopeProbes {
+            guard case .wirePoint(let id, let fraction) = probe,
+                  let wire = removedWires.first(where: { $0.id == id }) else { continue }
+            // Follow a surviving branch only when both endpoints agree or just one remains wired.
+            let first = netsByTerminal[wire.first]
+            let second = netsByTerminal[wire.second]
+            guard first == nil || second == nil || first === second else { continue }
+            let endpoints = fraction <= 0.5 ? [wire.first, wire.second] : [wire.second, wire.first]
+            if let survivor = endpoints.first(where: { netsByTerminal[$0] != nil }) {
+                scopeProbes[channel] = .netPin(survivor)
+            }
+        }
         let validProbes = scopeProbes.filter { scopeReader(for: $0.value) != nil }
         if validProbes != scopeProbes {
             for channel in scopeProbes.keys where validProbes[channel] == nil { scope.reset(channel: channel) }
@@ -881,14 +1351,28 @@ final class Workbench {
         settle()
     }
 
-    func assignScopeProbe(_ probe: ScopeProbe?, to channel: Int) {
-        guard (0..<Oscilloscope.channelCount).contains(channel), probe != scopeProbes[channel],
-              probe.map({ scopeReader(for: $0) != nil }) ?? true else { return }
+    var nextScopeChannel: Int? {
+        (0..<Oscilloscope.channelCount).first { scopeProbes[$0] == nil }
+    }
+
+    @discardableResult
+    func placeScopeProbe(_ probe: ScopeProbe, moving channel: Int? = nil) -> Bool {
+        guard let destination = channel ?? nextScopeChannel,
+              channel == nil || scopeProbes[destination] != nil else { return false }
+        return assignScopeProbe(probe, to: destination)
+    }
+
+    @discardableResult
+    func assignScopeProbe(_ probe: ScopeProbe?, to channel: Int) -> Bool {
+        guard (0..<Oscilloscope.channelCount).contains(channel),
+              probe.map({ scopeReader(for: $0) != nil }) ?? true else { return false }
+        guard probe != scopeProbes[channel] else { return true }
         recordEdit()
         scopeProbes[channel] = probe
         scope.reset(channel: channel)
         refreshScopeReaders()
         refreshScope()
+        return true
     }
 
     func refreshScope() {
@@ -897,23 +1381,41 @@ final class Workbench {
 
     private func refreshScopeReaders() {
         scopeReaders = scopeProbes.compactMapValues { scopeReader(for: $0) }
+        pulseReaders = scopeProbes.compactMapValues { scopePulseReader(for: $0) }
+        for (channel, read) in pulseReaders {
+            scope.primePulse(channel: channel, level: read())
+        }
+        engine.onEvaluationPass = pulseReaders.isEmpty ? nil : { [weak self] in
+            guard let self else { return }
+            for (channel, read) in pulseReaders {
+                scope.observePulse(channel: channel, level: read())
+            }
+        }
+    }
+
+    func scopeNet(for probe: ScopeProbe) -> Net? {
+        if let terminal = probe.terminal { return netsByTerminal[terminal] }
+        if case .wirePoint(_, let fraction) = probe, !(0...1).contains(fraction) { return nil }
+        return wires.first { $0.id == probe.wireID }.flatMap { netsByTerminal[$0.first] }
+    }
+
+    private func scopePulseReader(for probe: ScopeProbe) -> (() -> LogicState)? {
+        if let net = scopeNet(for: probe) { return { net.state } }
+        return standaloneScopeReader(for: probe)
     }
 
     private func scopeReader(for probe: ScopeProbe) -> ((Bool) -> ScopeValue)? {
-        let terminal: WorkbenchTerminal
-        switch probe {
-        case .wire(let id):
-            guard let wire = wires.first(where: { $0.id == id }),
-                  let net = netsByTerminal[wire.first] else { return nil }
-            return scopeNetReader(net)
-        case .pin(let pin):
-            terminal = pin
-        }
-        guard let part = parts.first(where: { $0.id == terminal.partID }),
+        if let net = scopeNet(for: probe) { return scopeNetReader(net) }
+        guard let read = standaloneScopeReader(for: probe) else { return nil }
+        return { stable in .logic(stable ? read() : .undefined) }
+    }
+
+    private func standaloneScopeReader(for probe: ScopeProbe) -> (() -> LogicState)? {
+        guard case .pin(let terminal) = probe, !terminal.isJunction,
+              let part = parts.first(where: { $0.id == terminal.partID }),
               let pin = part.pins[terminal.pinNumber] else { return nil }
-        if let net = netsByTerminal[terminal] { return scopeNetReader(net) }
         let readsNet = part.component is any SwitchedConnectivity && pin.direction == .bidirectional
-        return { stable in .logic(stable ? (readsNet ? pin.state : pin.driveState) : .undefined) }
+        return { readsNet ? pin.state : pin.driveState }
     }
 
     private func scopeNetReader(_ net: Net) -> (Bool) -> ScopeValue {
@@ -933,6 +1435,7 @@ final class Workbench {
 
     private func settle() {
         isStable = engine.settle()
+        synchronizeOscillators(oscillatorParts, at: clockTime)
         updateClockStatus()
         publishReadings()
         refreshScope()
@@ -960,5 +1463,14 @@ final class Workbench {
             }
         }
         if readings != states { readings = states }
+
+        let lit = Set(parts.compactMap { part -> Int? in
+            guard part.component is LED3mm,
+                  let cathode = circuitNet(at: WorkbenchTerminal(partID: part.id, pinNumber: 1))?.dcVoltage,
+                  let anode = circuitNet(at: WorkbenchTerminal(partID: part.id, pinNumber: 2))?.dcVoltage,
+                  anode - cathode - LED3mm.forwardVoltage > 1e-6 else { return nil }
+            return part.id
+        })
+        if illuminatedLEDs != lit { illuminatedLEDs = lit }
     }
 }

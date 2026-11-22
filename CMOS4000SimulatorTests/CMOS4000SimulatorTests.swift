@@ -281,6 +281,83 @@ struct BCDCountStateTests {
 }
 
 struct CD4510Tests {
+    private final class PulseSeenProbe: LogicComponent {
+        let input = Pin(number: 1, name: "Pulse input", direction: .input)
+        var pins: [Int: Pin] { [input.number: input] }
+        private(set) var pulseSeen = false
+
+        func evaluate() {
+            if input.state == .high { pulseSeen = true }
+        }
+
+        func clear() {
+            pulseSeen = false
+        }
+    }
+
+    @Test("CD4081 pin 3 pulses when CD4510 rolls over from five to zero")
+    func capturesPresetEnablePulse() throws {
+        let engine = SimulationEngine()
+        let counter = CD4510()
+        let gate = CD4081()
+        let probe = PulseSeenProbe()
+        let clock = Pin(number: 1, name: "Clock", direction: .output)
+
+        let chips: [any LogicComponent] = [counter, gate]
+        for chip in chips {
+            connectTestPower(chip, to: engine)
+            engine.addComponent(chip)
+        }
+        // Evaluate the probe during settling, before the feedback pulse disappears.
+        engine.addComponent(probe)
+
+        // Ground all four preset bits, carry-in, and reset.
+        for number in [3, 4, 5, 9, 12, 13] {
+            try #require(counter.pins[number]).receive(.low)
+        }
+        try #require(counter.pins[10]).receive(.high)
+
+        let presetEnable = Net(name: "AND pin 3 / Preset Enable")
+        presetEnable.connect(try #require(gate.pins[3]))
+        presetEnable.connect(try #require(counter.pins[1]))
+        presetEnable.connect(probe.input)
+        engine.addNet(presetEnable)
+
+        for (output, input) in [(14, 1), (11, 2)] {
+            let net = Net(name: "Counter pin \(output) / AND pin \(input)")
+            net.connect(try #require(counter.pins[output]))
+            net.connect(try #require(gate.pins[input]))
+            engine.addNet(net)
+        }
+
+        let clockNet = Net(name: "Clock")
+        clockNet.connect(clock)
+        clockNet.connect(try #require(counter.pins[15]))
+        engine.addNet(clockNet)
+
+        clock.drive(.low)
+        try #require(engine.settle())
+        #expect(counter.count == 0)
+
+        for _ in 0..<2 {
+            for expectedCount in 1...6 {
+                clock.drive(.high)
+                try #require(engine.settle())
+                #expect(counter.count == (expectedCount == 6 ? 0 : expectedCount))
+                #expect(presetEnable.state == .low)
+                #expect(probe.pulseSeen == (expectedCount == 6))
+
+                clock.drive(.low)
+                try #require(engine.settle())
+            }
+
+            #expect(probe.pulseSeen)
+            probe.clear()
+            try #require(engine.settle())
+            #expect(!probe.pulseSeen)
+        }
+    }
+
 
     @Test("CD4510 has all 16 physical pins")
     func pinDefinitions() {

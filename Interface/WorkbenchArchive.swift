@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 struct WorkbenchArchive: Codable, FileDocument {
     private enum Component: Codable {
+        case oscillatorDIP8, led3mm, cd4070
         case unit(MultiUnitChip, package: Int, unit: Int)
         case timer555, counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
         case driver(SevenSegmentDriverKind)
@@ -26,6 +27,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             switch part.component {
             case let header as PinHeader: self = .pinHeader(header.kind)
             case let device as AnalogSwitch: self = .analogSwitch(device.kind)
+            case is CD4070: self = .cd4070
             case is NE555: self = .timer555
             case is CD4510: self = .counter
             case is CD4060: self = .divider
@@ -33,8 +35,10 @@ struct WorkbenchArchive: Codable, FileDocument {
             case is MAN72A: self = .displayMAN72A
             case is NPN2N3904: self = .transistor
             case is Diode1N4148: self = .diode
+            case is LED3mm: self = .led3mm
             case is WorkbenchLED: self = .led
             case is WorkbenchPullUp: self = .pullUp
+            case is CXO_DIP8: self = .oscillatorDIP8
             case is WorkbenchClock: self = .clock
             case let driver as SevenSegmentDriver: self = .driver(driver.kind)
             case let capacitor as Capacitor: self = .capacitance(capacitor.kind, capacitor.value)
@@ -55,6 +59,7 @@ struct WorkbenchArchive: Codable, FileDocument {
         let rotation: Int?
         let frequency: ClockFrequency?
         let colour: LEDIndicatorSymbol.LampColour?
+        let designation: String?
         let importedReference: String?
         let importedSymbol: ImportedSymbol?
     }
@@ -92,18 +97,20 @@ struct WorkbenchArchive: Codable, FileDocument {
     let schematicMarks: [SchematicMark]?
     private let scopeProbes: [Int: ScopeProbe]?
 
-    init(bench: Workbench) throws {
+    init(bench: Workbench, partIDs: Set<Int>? = nil, wires: [WorkbenchWire]? = nil,
+         junctions: [Int: CGPoint]? = nil) throws {
         version = 2
         powerMode = bench.powerMode
-        wires = bench.wires
-        junctions = bench.junctions
-        schematicMarks = bench.schematicMarks.isEmpty ? nil : bench.schematicMarks
-        scopeProbes = bench.scopeProbes.isEmpty ? nil : bench.scopeProbes
-        parts = try bench.parts.map { part in
+        self.wires = wires ?? bench.wires
+        self.junctions = junctions ?? bench.junctions
+        schematicMarks = partIDs == nil && !bench.schematicMarks.isEmpty ? bench.schematicMarks : nil
+        scopeProbes = partIDs == nil && !bench.scopeProbes.isEmpty ? bench.scopeProbes : nil
+        parts = try bench.parts.filter { partIDs?.contains($0.id) ?? true }.map { part in
             Part(id: part.id, name: part.name, chipNumber: part.chipNumber,
                  component: try Component(part), position: bench.positions[part.id],
                  rotation: bench.rotations[part.id], frequency: bench.clockFrequencies[part.id],
-                 colour: bench.ledColours[part.id], importedReference: part.importedReference, importedSymbol: part.importedSymbol)
+                 colour: bench.ledColours[part.id], designation: part.designation,
+                 importedReference: part.importedReference, importedSymbol: part.importedSymbol)
         }
     }
 
@@ -113,9 +120,13 @@ struct WorkbenchArchive: Codable, FileDocument {
     }
 
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: try encoded())
+    }
+
+    func encoded() throws -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return FileWrapper(regularFileWithContents: try encoder.encode(self))
+        return try encoder.encode(self)
     }
 
     func makeCircuit() throws -> Circuit {
@@ -152,6 +163,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             case .additionalCounter(let kind): component = kind.makeComponent()
             case .pinHeader(let kind): component = PinHeader(kind)
             case .analogSwitch(let kind): component = AnalogSwitch(kind)
+            case .cd4070: component = CD4070()
             case .timer555: component = NE555()
             case .counter: component = CD4510()
             case .divider: component = CD4060()
@@ -160,8 +172,10 @@ struct WorkbenchArchive: Codable, FileDocument {
             case .driver(let kind): component = SevenSegmentDriver(kind)
             case .transistor: component = NPN2N3904()
             case .diode: component = Diode1N4148()
+            case .led3mm: component = LED3mm()
             case .led: component = WorkbenchLED()
             case .pullUp: component = WorkbenchPullUp()
+            case .oscillatorDIP8: component = CXO_DIP8()
             case .clock: component = WorkbenchClock()
             case .power(let rail): component = WorkbenchPower(rail)
             case .capacitance(let kind, let value):
@@ -183,12 +197,14 @@ struct WorkbenchArchive: Codable, FileDocument {
                 guard validID(number), chipNumbers.insert(number).inserted else { throw ArchiveError.invalidCircuit }
             }
             if let frequency = part.frequency {
-                guard component is WorkbenchClock, frequency.hertz.isFinite, frequency.hertz > 0,
+                guard component is WorkbenchClock, !(component is CXO_DIP8) || frequency.unit != .hertz,
+                      frequency.hertz.isFinite, frequency.hertz > 0,
                       0.5 / frequency.hertz < Double(Int64.max) else { throw ArchiveError.invalidCircuit }
             }
             if part.colour != nil && !(component is WorkbenchLED) { throw ArchiveError.invalidCircuit }
             let restored = WorkbenchPart(id: part.id, name: part.name, component: component,
-                                         unitPlacement: placement, chipNumber: part.chipNumber, importedReference: part.importedReference, importedSymbol: part.importedSymbol)
+                                         unitPlacement: placement, chipNumber: part.chipNumber, importedReference: part.importedReference, importedSymbol: part.importedSymbol,
+                                         designation: part.designation)
             if let drawing = restored.importedSymbol,
                !Set(restored.pins.keys).isSubset(of: drawing.pins.map(\.id)) {
                 throw ArchiveError.invalidCircuit
@@ -232,7 +248,7 @@ struct WorkbenchArchive: Codable, FileDocument {
                         ? WorkbenchTerminal(partID: powerID, pinNumber: endpoint.pinNumber) : endpoint
                 }
                 circuit.wires = circuit.wires.map {
-                    WorkbenchWire(id: $0.id, first: migrate($0.first), second: migrate($0.second), bends: $0.bends, netName: $0.netName, sourceRoute: $0.sourceRoute)
+                    WorkbenchWire(id: $0.id, first: migrate($0.first), second: migrate($0.second), bends: $0.bends, netName: $0.netName, sourceRoute: $0.sourceRoute, colour: $0.colour)
                 }
             }
         }
@@ -265,17 +281,24 @@ struct WorkbenchArchive: Codable, FileDocument {
             if drawing.mirror == "y" { offset.x.negate() }
             let position = CGPoint(x: origin.x + offset.x * ImportedSymbol.scale,
                                    y: origin.y + offset.y * ImportedSymbol.scale)
-            guard hypot(position.x - junction.x, position.y - junction.y) <= 0.001 else { return wire }
+            let turns = circuit.rotations[wire.first.partID, default: 0]
+            let current = drawing.pinOffset(pin, turns: turns).schematicRotated(turns)
+            let currentOrigin = WorkbenchWire.snap(origin)
+            let gridPosition = CGPoint(x: currentOrigin.x + current.x, y: currentOrigin.y + current.y)
+            let contact = drawing.gridPinOffsets == nil ? position : gridPosition
+            guard hypot(contact.x - junction.x, contact.y - junction.y) <= 0.001 else { return wire }
             return WorkbenchWire(id: wire.id, first: wire.first, second: wire.second,
-                                 bends: wire.bends, netName: wire.netName, sourceRoute: .pinAttachment)
+                                 bends: wire.bends, netName: wire.netName, sourceRoute: .pinAttachment, colour: wire.colour)
         }
         for (channel, probe) in scopeProbes ?? [:] {
             guard (0..<Oscilloscope.channelCount).contains(channel) else { throw ArchiveError.invalidCircuit }
             switch probe {
-            case .pin(let pin):
-                guard !pin.isJunction, validEndpoint(pin) else { throw ArchiveError.invalidCircuit }
+            case .pin(let pin), .netPin(let pin):
+                guard validEndpoint(pin) else { throw ArchiveError.invalidCircuit }
             case .wire(let id):
                 guard wireIDs.contains(id) else { throw ArchiveError.invalidCircuit }
+            case .wirePoint(let id, let fraction):
+                guard wireIDs.contains(id), (0...1).contains(fraction) else { throw ArchiveError.invalidCircuit }
             }
             circuit.scopeProbes[channel] = probe
         }

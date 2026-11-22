@@ -1,13 +1,15 @@
 import AppKit
 import SwiftUI
 
+let oscilloscopeChannelColours: [Color] = [.yellow, .cyan, .green, .pink]
+
 struct OscilloscopeView: View {
     let bench: Workbench
     @Binding var voltageRange: Double
+    @Binding var cursors: ScopeTimeCursors
     let placementLabel: String
     let changePlacement: () -> Void
 
-    private let colours: [Color] = [.yellow, .cyan, .green, .pink]
     private let spans = [0.001, 0.01, 0.1, 1.0, 10.0, 60.0]
     private var scope: Oscilloscope { bench.scope }
 
@@ -16,6 +18,9 @@ struct OscilloscopeView: View {
             HStack {
                 Button(placementLabel, action: changePlacement)
                 Spacer()
+                Toggle("Cursors", isOn: $cursors.isVisible)
+                    .toggleStyle(.button)
+                    .help("Show or hide the two time cursors")
                 Button(scope.running ? "Freeze" : "Run") {
                     scope.setRunning(!scope.running)
                     bench.refreshScope()
@@ -24,11 +29,24 @@ struct OscilloscopeView: View {
                     scope.clear()
                     bench.refreshScope()
                 }
+                .help("Clear the waveforms and re-arm the pulse indicators")
                 Text(scope.running ? "Running" : "Frozen")
                     .font(.caption)
             }
             HStack {
-                ForEach(0..<Oscilloscope.channelCount, id: \.self) { probeMenu($0) }
+                ForEach(0..<Oscilloscope.channelCount, id: \.self) { channel in
+                    VStack(alignment: .leading, spacing: 3) {
+                        probeMenu(channel)
+                        if bench.scopeProbes[channel] != nil {
+                            let seen = scope.pulseSeenChannels.contains(channel)
+                            Label(seen ? "Pulse seen" : "No pulse seen",
+                                  systemImage: seen ? "checkmark.circle.fill" : "circle")
+                                .font(.caption)
+                                .foregroundStyle(seen ? oscilloscopeChannelColours[channel] : .secondary)
+                                .help("Latches when the signal rises from LOW to HIGH while the scope is running")
+                        }
+                    }
+                }
             }
             HStack {
                 Picker("Time window", selection: Binding(get: { scope.span }, set: scope.setSpan)) {
@@ -50,18 +68,89 @@ struct OscilloscopeView: View {
                 let window = scope.window
                 let capturedThrough = scope.time
                 let traces = (0..<Oscilloscope.channelCount).map { scope.samples(channel: $0, in: window) }
-                Canvas { context, size in
-                    draw(in: context, size: size, window: window,
-                         capturedThrough: capturedThrough, traces: traces)
+                GeometryReader { geometry in
+                    let axis = ScopeTimeAxis(window: window, width: geometry.size.width)
+                    VStack(alignment: .leading, spacing: 4) {
+                        Canvas { context, size in
+                            draw(in: context, size: size, axis: axis,
+                                 capturedThrough: capturedThrough, traces: traces)
+                        }
+                        .id(scope.revision)
+                        .accessibilityLabel("Four-channel waveform plot")
+                        .overlay {
+                            if cursors.isVisible {
+                                GeometryReader { plot in
+                                    cursor("A", position: $cursors.a, axis: axis, height: plot.size.height,
+                                           handleY: 14, dashed: false)
+                                    cursor("B", position: $cursors.b, axis: axis, height: plot.size.height,
+                                           handleY: plot.size.height - 14, dashed: true)
+                                }
+                                .coordinateSpace(name: "scopePlot")
+                            }
+                        }
+                        .background(Color(white: 0.08))
+                        .clipShape(.rect(cornerRadius: 6))
+
+                        if cursors.isVisible {
+                            cursorReadout(cursors.measurement(on: axis))
+                        }
+                    }
                 }
-                .id(scope.revision)
+                .frame(minHeight: 120, maxHeight: .infinity)
             }
-            .background(Color(white: 0.08))
-            .clipShape(.rect(cornerRadius: 6))
-            .frame(minHeight: 120, maxHeight: .infinity)
-            .accessibilityLabel("Four-channel waveform plot")
         }
         .padding(12)
+    }
+
+    private func cursor(_ name: String, position: Binding<Double>, axis: ScopeTimeAxis,
+                        height: CGFloat, handleY: CGFloat, dashed: Bool) -> some View {
+        let x = axis.x(at: position.wrappedValue)
+        let color: Color = dashed ? .orange : .white
+        return ZStack {
+            Path { path in
+                path.move(to: CGPoint(x: x, y: 0))
+                path.addLine(to: CGPoint(x: x, y: height))
+            }
+            .stroke(color, style: StrokeStyle(lineWidth: 1.5, dash: dashed ? [5, 3] : []))
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+
+            Text(name)
+                .font(.caption.bold())
+                .foregroundStyle(.black)
+                .frame(width: 30, height: 24)
+                .background(color, in: .rect(cornerRadius: 4))
+                .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named("scopePlot"))
+                    .onChanged { drag in
+                        position.wrappedValue = axis.fraction(at: drag.location.x)
+                    })
+                .accessibilityLabel("Time cursor " + name)
+                .accessibilityValue(ScopeTimeCursors.formatTime(axis.time(at: position.wrappedValue)))
+                .accessibilityAdjustableAction { direction in
+                    switch direction {
+                    case .increment: position.wrappedValue = min(1, position.wrappedValue + 0.01)
+                    case .decrement: position.wrappedValue = max(0, position.wrappedValue - 0.01)
+                    @unknown default: break
+                    }
+                }
+                .help("Drag time cursor " + name)
+                .position(x: min(x, axis.x(at: 1) - 7), y: handleY)
+        }
+    }
+
+    private func cursorReadout(_ measurement: ScopeTimeCursors.Measurement) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 12) {
+                Text("A  " + ScopeTimeCursors.formatTime(measurement.a))
+                Text("B  " + ScopeTimeCursors.formatTime(measurement.b))
+                Text("Δt  " + ScopeTimeCursors.formatTime(measurement.interval))
+                Text("1/Δt  " + (measurement.reciprocal.map(ScopeTimeCursors.formatFrequency) ?? "Undefined"))
+            }
+            .monospacedDigit()
+            Text("1/Δt is the waveform frequency only when A and B span exactly one full period.")
+                .foregroundStyle(.secondary)
+        }
+        .font(.caption)
     }
 
     private func probeMenu(_ channel: Int) -> some View {
@@ -88,7 +177,7 @@ struct OscilloscopeView: View {
         } label: {
             Text("CH \(channel + 1) · \(probeLabel(target))")
                 .lineLimit(1)
-                .foregroundStyle(colours[channel])
+                .foregroundStyle(oscilloscopeChannelColours[channel])
                 .padding(.horizontal, 5)
                 .padding(.vertical, 2)
                 .background(Color(white: 0.12), in: .rect(cornerRadius: 4))
@@ -98,21 +187,21 @@ struct OscilloscopeView: View {
 
     private func probeLabel(_ probe: ScopeProbe?) -> String {
         switch probe {
-        case .pin(let terminal): bench.label(for: terminal)
-        case .wire(let id): "Wire \(id)"
+        case .pin(let terminal), .netPin(let terminal): bench.label(for: terminal)
+        case .wire(let id), .wirePoint(let id, _): "Wire \(id)"
         case nil: "Attach probe"
         }
     }
 
-    private func draw(in context: GraphicsContext, size: CGSize, window: ClosedRange<Double>,
+    private func draw(in context: GraphicsContext, size: CGSize, axis: ScopeTimeAxis,
                       capturedThrough: Double, traces: [[ScopeSample]]) {
-        let duration = window.upperBound - window.lowerBound
-        let left: CGFloat = 44
-        let width = max(1, size.width - left - 8)
+        let window = axis.window
+        let left = ScopeTimeAxis.left
+        let width = axis.plotWidth
         let laneHeight = size.height / CGFloat(Oscilloscope.channelCount)
         var grid = Path()
         for division in 0...10 {
-            let x = left + width * CGFloat(division) / 10
+            let x = axis.x(at: Double(division) / 10)
             grid.move(to: CGPoint(x: x, y: 0))
             grid.addLine(to: CGPoint(x: x, y: size.height))
         }
@@ -125,7 +214,7 @@ struct OscilloscopeView: View {
 
         for channel in 0..<Oscilloscope.channelCount {
             let samples = traces[channel]
-            let colour = colours[channel]
+            let colour = oscilloscopeChannelColours[channel]
             let top = CGFloat(channel) * laneHeight
             let last = samples.last(where: { $0.time <= window.upperBound })?.value
             let label: String
@@ -151,7 +240,7 @@ struct OscilloscopeView: View {
                 case .logic(.highImpedance): level = 0.35
                 case .logic(.undefined): level = 0.65
                 }
-                return CGPoint(x: left + width * (time - window.lowerBound) / duration,
+                return CGPoint(x: axis.x(for: time),
                                y: top + laneHeight * (0.85 - 0.7 * level))
             }
 
@@ -204,6 +293,7 @@ struct OscilloscopeView: View {
 @Observable
 final class WorkbenchScopeWindow {
     var voltageRange = 5.0
+    var cursors = ScopeTimeCursors()
     private var window: NSWindow?
 
     func show(bench: Workbench, dock: @escaping () -> Void) {
@@ -222,6 +312,8 @@ final class WorkbenchScopeWindow {
             bench: bench,
             voltageRange: Binding(get: { [weak self] in self?.voltageRange ?? 5 },
                                   set: { [weak self] in self?.voltageRange = $0 }),
+            cursors: Binding(get: { [weak self] in self?.cursors ?? ScopeTimeCursors() },
+                             set: { [weak self] in self?.cursors = $0 }),
             placementLabel: "Dock in Workbench",
             changePlacement: dock
         ))

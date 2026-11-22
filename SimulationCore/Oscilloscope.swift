@@ -2,7 +2,23 @@ import Observation
 
 enum ScopeProbe: Codable, Hashable {
     case pin(WorkbenchTerminal)
+    case netPin(WorkbenchTerminal)
     case wire(Int)
+    case wirePoint(id: Int, fraction: Double)
+
+    var terminal: WorkbenchTerminal? {
+        switch self {
+        case .pin(let terminal), .netPin(let terminal): terminal
+        case .wire, .wirePoint: nil
+        }
+    }
+
+    var wireID: Int? {
+        switch self {
+        case .wire(let id), .wirePoint(let id, _): id
+        case .pin, .netPin: nil
+        }
+    }
 }
 
 enum ScopeValue: Equatable {
@@ -68,6 +84,8 @@ final class Oscilloscope {
     private(set) var running = true
     private(set) var span = 0.1
     private(set) var revision = 0
+    private(set) var pulseSeenChannels: Set<Int> = []
+    @ObservationIgnored private var pulseLevels: [Int: LogicState] = [:]
     @ObservationIgnored private(set) var time = 0.0
     @ObservationIgnored private var histories = Array(repeating: ScopeHistory(), count: channelCount)
 
@@ -77,18 +95,36 @@ final class Oscilloscope {
     }
 
     func setRunning(_ enabled: Bool) {
-        if enabled { clear() }
+        if enabled { clearHistory() }
         running = enabled
     }
 
     func clear() {
+        pulseSeenChannels.removeAll()
+        clearHistory()
+    }
+
+    private func clearHistory() {
         histories = Array(repeating: ScopeHistory(), count: Self.channelCount)
         revision &+= 1
     }
 
     func reset(channel: Int) {
+        pulseSeenChannels.remove(channel)
+        pulseLevels.removeValue(forKey: channel)
         histories[channel] = ScopeHistory()
         revision &+= 1
+    }
+
+    func primePulse(channel: Int, level: LogicState) {
+        pulseLevels[channel] = level
+    }
+
+    func observePulse(channel: Int, level: LogicState) {
+        let previous = pulseLevels.updateValue(level, forKey: channel)
+        if running, previous == .low, level == .high, !pulseSeenChannels.contains(channel) {
+            pulseSeenChannels.insert(channel)
+        }
     }
 
     func capture(at timestamp: Double, value: (Int) -> ScopeValue?) {

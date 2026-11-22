@@ -84,6 +84,7 @@ final class SimulationEngine {
     private(set) var components: [any LogicComponent] = []
     private(set) var nets: [Net] = []
     var automaticallyPowerChips = false
+    var onEvaluationPass: (() -> Void)?
     private var unpoweredChips: Set<ObjectIdentifier> = []
     private var drivenPins: [Pin] = []
     private var previousStates: [LogicState] = []
@@ -150,6 +151,7 @@ final class SimulationEngine {
             }
             let modeled = switches.isEmpty ? DiscreteDC.apply(components: components, nets: nets) : []
             timing.prepareInputs()
+            onEvaluationPass?()
             for component in components where !modeled.contains(ObjectIdentifier(component)) {
                 if let chip = component as? any PoweredChip, !automaticallyPowerChips, chip.powerState != .powered {
                     if unpoweredChips.insert(ObjectIdentifier(chip)).inserted {

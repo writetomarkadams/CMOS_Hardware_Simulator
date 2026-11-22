@@ -58,6 +58,10 @@ NE555 uses pins 1 GND, 2 TRIG, 3 OUT, 4 active-LOW RESET, 5 CONT, 6 THRES, 7 DIS
 
 This is a limited ideal 5 V RC model, not a general analog solver. Reject unsupported timing loads/networks and reversed polarized timing capacitors with a warning and X. Require actual +5 V/GND timing rails even in Automatic Power mode. CONT may be open or capacitor-bypassed to GND; driven control voltages remain unsupported. Rewiring/reopen/power restoration restarts timing-capacitor voltage at zero; value edits retain its current voltage. A monostable needs a valid reset/trigger to establish known state. Consult PROJECT_STATUS.md for wiring and test values.
 
+### Crystal clock oscillator
+
+CXO_DIP8 models a generic 5 V half-size DIP oscillator with EN on pin 1, GND on pin 4, OUT on pin 5, and VCC on pin 8. EN HIGH or open allows oscillation. EN LOW makes OUT high impedance. Explicit Power requires actual supply rails. Preserve the ideal half-period edge scheduling and editable kHz/MHz settings through archives, Undo/Redo and duplication. The scheduler may run below wall-clock speed at high edge rates.
+
 ### Capacitors
 
 | Component | Description |
@@ -118,6 +122,10 @@ The MAN74A requires its common-cathode pins 4 and 12 connected to GND. The MAN72
 
 Display segments must respond to their electrical connections, not automatically interpret BCD values.
 
+### Through-hole LEDs
+
+`LED_D3.0mm` maps KiCad `Device:LED` with footprint `LED_THT:LED_D3.0mm`. Preserve pin 1 cathode and pin 2 anode. It glows when the DC solver finds forward current. Keep the existing one-pin Logic LED separate, and verify forward, reverse and disconnected wiring, import and archive round-trips.
+
 ### Connectors
 
 The vertical 2.54 mm pin headers (1×2, 1×3, 1×8) expose independent physical contacts. They never drive or bridge nets. Preserve pin numbering and validate the KiCad footprint together with the matching schematic symbol.
@@ -131,6 +139,12 @@ The vertical 2.54 mm pin headers (1×2, 1×3, 1×8) expose independent physical 
 - Preserve saved package identities, shared components, wiring, junctions, positions, rotations, component settings, and power mode.
 - Manual Clock Source components reopen paused; valid powered NE555 RC circuits start automatically. Archives preserve circuit configuration, not running sequential state or capacitor charge.
 - For file-workflow changes, verify the native Save/Open dialogs as well as archive round-trip tests.
+
+## Circuit checks
+
+- Keep Check Circuit read-only. It may read settled pin states, actual net topology and existing model warnings, and adjust the viewport to reveal a finding. It must never settle or advance the simulator, modify the circuit, or create an undo step.
+- Base each suggestion on the supported simulator model. Explain asserted controls as conditions the user may have intended. Infer a CD4026-to-display mapping only when a clear majority of distinct nets match one counter.
+- When changing circuit checks, test known faults, corrected wiring, and archive and revision equality before and after diagnostics. Verify that selecting a finding highlights the correct pin or wire in the native workbench.
 
 ## Testing requirements
 

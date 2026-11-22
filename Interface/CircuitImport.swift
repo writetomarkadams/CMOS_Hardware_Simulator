@@ -247,6 +247,8 @@ struct CircuitImportPreview {
         case ("Display_Character", "MAN72A"): return Model(name: "MAN72A") { MAN72A() }
         case ("Display_Character", "MAN74A"): return Model(name: "MAN74A") { MAN74A() }
         case ("Transistor_BJT", "2N3904"): return Model(name: "2N3904") { NPN2N3904() }
+        case ("Device", "LED") where part.footprint == LED3mm.footprint:
+            return Model(name: "LED_D3.0mm") { LED3mm() }
         case ("Diode", "1N4148"): return Model(name: "1N4148") { Diode1N4148() }
         default: return nil
         }
@@ -401,8 +403,9 @@ private extension CircuitImportPreview {
         let minimumY = points.map(\.millimetres.y).min() ?? 0
         func canvas(_ point: Point) -> CGPoint {
             let mm = point.millimetres
-            return CGPoint(x: 120 + (mm.x - minimumX) * ImportedSymbol.scale,
-                           y: originY + 100 + (mm.y - minimumY) * ImportedSymbol.scale)
+            return WorkbenchWire.snap(CGPoint(x: 120 + (mm.x - minimumX) * SchematicSymbolGeometry.scale,
+                                             y: WorkbenchWire.snap(CGPoint(x: 0, y: originY)).y + 100
+                                                + (mm.y - minimumY) * SchematicSymbolGeometry.scale))
         }
 
         var usedReferences = existingReferences
@@ -434,6 +437,16 @@ private extension CircuitImportPreview {
                 var drawing = instance.drawing
                 drawing.mirror = instance.mirror
                 let available = Set(unit?.pinNumbers ?? Array(component.pins.keys))
+                let origin = canvas(instance.origin)
+                let turns = (4 - instance.turns) % 4
+                var offsets: [Int: CGPoint] = [:]
+                for pin in drawing.pins {
+                    guard let source = instance.pins[String(pin.id)] else { continue }
+                    let endpoint = canvas(source)
+                    let delta = CGPoint(x: endpoint.x - origin.x, y: endpoint.y - origin.y)
+                    offsets[pin.id] = drawing.localReflection(delta.schematicRotated(-turns), turns: turns)
+                }
+                drawing.gridPinOffsets = offsets
                 drawing.noConnectPins = available.sorted().filter {
                     guard let point = instance.pins[String($0)], schematic.noConnects.contains(point) else { return false }
                     markedPins.insert(point)
@@ -444,8 +457,8 @@ private extension CircuitImportPreview {
                                          importedReference: reference, importedSymbol: drawing)
                 placement.parts.append(part)
                 usedReferences.insert(part.reference ?? reference)
-                placement.positions[id] = canvas(instance.origin)
-                placement.rotations[id] = (4 - instance.turns) % 4
+                placement.positions[id] = origin
+                placement.rotations[id] = turns
                 for pin in available.sorted() {
                     if activeTerminals.contains(.init(reference: mapping.reference, pin: String(pin))),
                        let point = instance.pins[String(pin)] {

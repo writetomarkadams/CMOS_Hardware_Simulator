@@ -8,27 +8,31 @@ struct LogicSwitchSymbol: View {
     let select: () -> Void
     let rotate: (Int) -> Void
 
+    static func endpoint(showsValue: Bool) -> CGPoint {
+        CGPoint(x: 70, y: showsValue ? 20 : 30)
+    }
+
     private var terminal: WorkbenchTerminal {
         WorkbenchTerminal(partID: partID, pinNumber: 1)
     }
 
     var body: some View {
-        let selected = bench.selectedTerminal == terminal
         let output = bench.readings[terminal] ?? .highImpedance
 
         let ink = isSelected ? Color.schematicSelectionInk : Color.primary
-        let terminalY: CGFloat = source.showsValue ? 21 : 28
+        let endpoint = Self.endpoint(showsValue: source.showsValue)
+        let leadEnd = endpoint.x - (bench.showsOpenPinMarker(terminal) ? 2.5 : 0)
 
         ZStack(alignment: .topLeading) {
             Path { path in
                 if source.showsValue {
-                    path.addLines([CGPoint(x: 48, y: terminalY), CGPoint(x: 68, y: terminalY)])
+                    path.addLines([CGPoint(x: 48, y: endpoint.y), CGPoint(x: leadEnd, y: endpoint.y)])
                     return
                 }
-                path.move(to: CGPoint(x: 4, y: 28))
-                path.addLine(to: CGPoint(x: 16, y: 28))
-                path.move(to: CGPoint(x: 46, y: 28))
-                path.addLine(to: CGPoint(x: 68, y: 28))
+                path.move(to: CGPoint(x: 4, y: endpoint.y))
+                path.addLine(to: CGPoint(x: 16, y: endpoint.y))
+                path.move(to: CGPoint(x: 46, y: endpoint.y))
+                path.addLine(to: CGPoint(x: leadEnd, y: endpoint.y))
             }
             .stroke(ink, lineWidth: 1.5)
             .allowsHitTesting(false)
@@ -36,7 +40,7 @@ struct LogicSwitchSymbol: View {
 
             Button {
                 select()
-                bench.toggle(source)
+                if !workbenchShiftPressed { bench.toggle(source) }
             } label: {
                 Group {
                     if source.showsValue {
@@ -68,24 +72,10 @@ struct LogicSwitchSymbol: View {
                 PartRotationCommands(rotate: rotate)
                 Button("Remove Part", role: .destructive) { bench.removePart(partID) }
             }
-            .position(x: 32, y: 21)
+            .position(x: 32, y: source.showsValue ? 20 : 23)
 
-            Button {
-                bench.select(terminal)
-            } label: {
-                Image(systemName: selected ? "circle.inset.filled" : "circle")
-                    .font(.system(size: 8))
-                    .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-                    .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(bench.label(for: terminal))
-            .accessibilityValue(output.description)
-            .accessibilityAddTraits(selected ? .isSelected : [])
-            .help(output.description)
-            .position(x: 68, y: terminalY)
+            SchematicPinButton(terminal: terminal, bench: bench)
+                .position(endpoint)
         }
         .frame(width: 80, height: 40)
     }

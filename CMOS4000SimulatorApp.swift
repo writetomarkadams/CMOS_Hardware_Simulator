@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct CMOS4000SimulatorApp: App {
+    @NSApplicationDelegateAdaptor(WorkbenchAppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup("Circuit Workbench", id: "workbench") {
             WorkbenchView()
@@ -14,6 +16,7 @@ struct CMOS4000SimulatorApp: App {
 struct WorkbenchActions {
     let open: () -> Void
     let save: () -> Void
+    let saveAs: () -> Void
     let importCircuit: () -> Void
     let clear: () -> Void
     let undo: () -> Void
@@ -21,6 +24,7 @@ struct WorkbenchActions {
     let rotate: (Int) -> Void
     let oscilloscope: () -> Void
     let wireList: Binding<Bool>
+    let componentAppearance: Binding<ComponentAppearance>
     let zoomIn: () -> Void
     let zoomOut: () -> Void
     let resetZoom: () -> Void
@@ -30,6 +34,7 @@ struct WorkbenchActions {
     let canRedo: Bool
     let canRotate: Bool
     let hasCircuit: Bool
+    let canClear: Bool
     let zoom: CGFloat
 }
 
@@ -52,14 +57,17 @@ struct WorkbenchCommands: Commands {
             Button("Open…") { actions?.open() }
                 .keyboardShortcut("o")
                 .disabled(actions == nil)
-            Button("Save…") { actions?.save() }
+            Button("Save") { actions?.save() }
                 .keyboardShortcut("s")
+                .disabled(actions == nil)
+            Button("Save As…") { actions?.saveAs() }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
                 .disabled(actions == nil)
             Button("Import Circuit…") { actions?.importCircuit() }
                 .disabled(actions == nil)
             Divider()
             Button("Clear Workbench…") { actions?.clear() }
-                .disabled(actions?.hasCircuit != true)
+                .disabled(actions?.canClear != true)
         }
         CommandGroup(replacing: .undoRedo) {
             Button("Undo") { actions?.undo() }
@@ -81,8 +89,15 @@ struct WorkbenchCommands: Commands {
                 .disabled(actions == nil)
             if let actions {
                 Toggle("Wire List", isOn: actions.wireList)
+                Picker("Component Appearance", selection: actions.componentAppearance) {
+                    ForEach(ComponentAppearance.allCases, id: \.self) { appearance in
+                        Text(appearance.rawValue).tag(appearance)
+                    }
+                }
+                .pickerStyle(.menu)
             } else {
                 Button("Wire List") {}.disabled(true)
+                Button("Component Appearance") {}.disabled(true)
             }
             Divider()
             Button("Zoom In") { actions?.zoomIn() }

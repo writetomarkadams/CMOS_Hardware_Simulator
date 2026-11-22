@@ -8,7 +8,6 @@ private extension CGRect {
 
 enum CanvasItem: Hashable {
     case part(Int)
-    case terminal(WorkbenchTerminal)
 }
 
 struct CanvasBounds: PreferenceKey {
@@ -22,41 +21,68 @@ struct CanvasBounds: PreferenceKey {
     }
 }
 
+private extension WireColour {
+    var stroke: Color {
+        switch self {
+        case .black: .black
+        case .grey: Color(white: 0.46)
+        case .brown: Color(red: 0.56, green: 0.32, blue: 0.19)
+        case .red: .red
+        case .orange: .orange
+        case .yellow: Color(red: 1, green: 0.81, blue: 0.14)
+        case .green: .green
+        case .blue: .blue
+        case .violet: .purple
+        }
+    }
+}
+
 struct WorkbenchView: View {
+    @Environment(\.colorScheme) private var colourScheme
     @State private var bench = Workbench()
     @State private var scopeWindow = WorkbenchScopeWindow()
     @State private var scopeDocked = false
     @AppStorage("workbenchShowsWireList") private var showsWireList = false
     @State private var showingLibrary = false
-    @State private var openingFile = false
-    @State private var openingImport = false
     @State private var importFile: CircuitImportFile?
 
-    @State private var confirmingClear = false
-    @State private var savingFile = false
-    @State private var exportArchive: WorkbenchArchive?
-    @State private var fileError: String?
+    @State private var editingOscillator: WorkbenchPart?
     @State private var editingResistance: Resistor?
     @State private var editingCapacitance: Capacitor?
     @State private var camera = WorkbenchViewport()
     @State private var circuitBounds: CGRect?
     @State private var viewportSize: CGSize = .zero
     @State private var occupiedBounds: [Int: CGRect] = [:]
+    @State private var showingCircuitCheck = false
+    @State private var findings: [CircuitFinding] = []
+    @State private var selectedFinding: CircuitFinding.ID?
     @State private var selectedParts: Set<Int> = []
     @State private var pointerLocation: CGPoint?
+    @State private var placingProbe = false
+    @State private var movingProbe: Int?
+    @State private var probePointer: CGPoint?
+    @State private var probeMessage: String?
     @GestureState private var selectionBox: CGRect?
     @FocusState private var canvasFocused: Bool
-    @GestureState private var drag: PartDrag?
+    @GestureState private var drag: Workbench.Movement?
+    @State private var dragCancelled = false
+    @State private var placement: Placement?
+    @State private var placementPointer: CGPoint?
+
+    private struct Placement {
+        let archive: WorkbenchArchive
+        let anchor: CGPoint
+        let outlines: [CGRect]
+        let routes: [[CGPoint]]
+    }
 
     private struct PartIdentity: Hashable {
         let id: Int
         let component: ObjectIdentifier
     }
 
-    private struct PartDrag {
-        let id: Int
-        let translation: CGSize
-    }
+    private var workflow: WorkbenchFileWorkflow { .shared }
+    private var canClear: Bool { bench.hasCircuit || bench.isDirty || bench.documentURL != nil }
 
     private let canvasSpace = "WorkbenchCanvas"
 
@@ -69,7 +95,7 @@ struct WorkbenchView: View {
                 toolStrip
                 Divider()
                 workbenchArea
-                wireList
+                if showingCircuitCheck { circuitCheckPanel } else { wireList }
                 Divider()
                 instrumentStrip
             }
@@ -77,7 +103,7 @@ struct WorkbenchView: View {
             if scopeDocked {
                 Divider()
                 OscilloscopeView(bench: bench, voltageRange: $scopeWindow.voltageRange,
-                                 placementLabel: "Undock", changePlacement: showScope)
+                                 cursors: $scopeWindow.cursors, placementLabel: "Undock", changePlacement: showScope)
                     .frame(height: 240)
             }
 
@@ -95,12 +121,7 @@ struct WorkbenchView: View {
             }
         }
         .focusedSceneValue(\.workbenchActions, commands)
-        .confirmationDialog("Clear the workbench?", isPresented: $confirmingClear) {
-            Button("Clear Workbench", role: .destructive) {
-                bench.clear()
-                selectedParts.removeAll()
-            }
-        }
+        .background(WorkbenchWindowBridge(bench: bench, isDirty: bench.isDirty))
         .task(id: bench.hasRunningClocks) {
             guard bench.hasRunningClocks else { return }
             let clock = ContinuousClock()
@@ -114,39 +135,10 @@ struct WorkbenchView: View {
                 }
             }
         }
-        .fileImporter(isPresented: $openingFile, allowedContentTypes: [.data], onCompletion: openCircuit)
         .sheet(item: $importFile) { file in
-            CircuitImportView(file: file, hasExistingCircuit: !bench.parts.isEmpty, powerMode: bench.powerMode) { replacing in
-                if let first = bench.importCircuit(file.preview, replacing: replacing) {
-                    selectedParts.removeAll()
-                    occupiedBounds.removeAll()
-                    importFile = nil
-                    if let point = bench.positions[first.id] {
-                        if first.importedSymbol != nil {
-                            let top = bench.parts.filter { $0.id >= first.id }.compactMap { part -> CGFloat? in
-                                guard let position = bench.positions[part.id], let drawing = part.importedSymbol else { return nil }
-                                let quarterTurn = bench.rotations[part.id, default: 0] % 2 != 0
-                                return position.y - (quarterTurn ? drawing.bounds.width : drawing.bounds.height) / 2
-                            }.min() ?? point.y
-                            camera.reveal(top: top - 24)
-                        } else {
-                            camera.reveal(top: point.y - 20)
-                        }
-                    }
-                }
+            CircuitImportView(file: file, hasExistingCircuit: canClear, powerMode: bench.powerMode) {
+                importCircuit(file, replacing: $0)
             }
-        }
-        .fileExporter(isPresented: $savingFile, document: exportArchive,
-                      contentType: .json, defaultFilename: "Circuit.json") { result in
-            if case .failure(let error) = result { fileError = error.localizedDescription }
-        }
-        .alert("Workbench File", isPresented: Binding(
-            get: { fileError != nil },
-            set: { if !$0 { fileError = nil } }
-        )) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(fileError ?? "")
         }
         .sheet(isPresented: $showingLibrary) {
             ComponentLibraryView(bench: bench, placeNewPart: placeNewPart)
@@ -156,10 +148,21 @@ struct WorkbenchView: View {
                 bench.setCapacitance(value, for: capacitor)
             }
         }
+        .sheet(item: $editingOscillator) { part in
+            if let source = part.component as? CXO_DIP8 {
+                ClockFrequencyEditor(frequency: bench.clockFrequency(for: part.id, source: source),
+                                     units: [.kilohertz, .megahertz]) {
+                    bench.setClockFrequency($0, for: part.id)
+                }
+            }
+        }
         .sheet(item: $editingResistance) { resistor in
             ResistanceEditor(resistor: resistor) { value, unit in
                 bench.setResistance(value, unit: unit, for: resistor)
             }
+        }
+        .onChange(of: bench.circuitRevision) { _, _ in
+            if showingCircuitCheck { refreshCircuitCheck() }
         }
         .onChange(of: bench.parts.map(\.id)) { _, ids in
             selectedParts.formIntersection(ids)
@@ -175,17 +178,22 @@ struct WorkbenchView: View {
         GeometryReader { viewport in
             let visibleCorner = camera.worldPoint(at: CGPoint(x: viewport.size.width, y: viewport.size.height))
             let extent = canvasExtent
+            let pinLocations = displayedPinLocations()
+            let movement = dragCancelled ? nil : drag
             canvasBackground
                 .overlay(alignment: .topLeading) {
                     canvas
                         .frame(width: max(visibleCorner.x, extent.width),
                                height: max(visibleCorner.y, extent.height), alignment: .topLeading)
                         .backgroundPreferenceValue(CanvasBounds.self) { anchors in
-                            wireLayer(anchors: anchors)
+                            wireLayer(anchors: anchors, pinLocations: pinLocations, movement: movement)
                         }
+                        .overlay { pinMarkers(at: pinLocations) }
+                        .environment(\.schematicZoom, camera.scale)
                         .coordinateSpace(name: canvasSpace)
                         .scaleEffect(camera.scale, anchor: .topLeading)
                         .offset(x: camera.origin.x, y: camera.origin.y)
+                        .allowsHitTesting(placement == nil)
                 }
                 .overlay {
                     if bench.parts.isEmpty {
@@ -193,10 +201,19 @@ struct WorkbenchView: View {
                             .buttonStyle(.bordered)
                     }
                 }
+                .overlay {
+                    if let placement { placementLayer(placement) }
+                }
+                .overlay {
+                    if placingProbe || !bench.scopeProbes.isEmpty {
+                        probeLayer(pins: pinLocations, movement: movement)
+                    }
+                }
                 .background {
                     WorkbenchNavigation(
                         pan: { camera.pan(x: $0, y: $1) },
-                        zoom: { camera.zoom(to: camera.scale * $0, around: $1) }
+                        zoom: { camera.zoom(to: camera.scale * $0, around: $1) },
+                        editShortcut: handleEditShortcut
                     )
                 }
                 .clipped()
@@ -205,33 +222,53 @@ struct WorkbenchView: View {
                 .focusable()
                 .focused($canvasFocused)
                 .focusEffectDisabled()
-                .onKeyPress(keys: [.delete, .deleteForward], phases: .down) { _ in
-                    guard bench.selectedTerminal == nil else { return .ignored }
-                    if bench.selectedWireID != nil {
-                        bench.removeSelectedWire()
-                        return .handled
+                .onChange(of: drag == nil) { _, ended in
+                    if ended { dragCancelled = false }
+                    else { canvasFocused = true }
+                }
+                .onKeyPress(.escape) {
+                    if placement != nil {
+                        placement = nil
+                    } else if placingProbe {
+                        endProbePlacement()
+                    } else if drag != nil {
+                        dragCancelled = true
+                    } else if bench.selectedTerminal != nil {
+                        bench.cancelWire()
+                    } else if !selectedParts.isEmpty || bench.selectedWireID != nil {
+                        selectedParts.removeAll()
+                        bench.selectWire(nil)
+                    } else {
+                        return .ignored
                     }
-                    guard !selectedParts.isEmpty else { return .ignored }
-                    bench.removeParts(selectedParts)
-                    selectedParts.removeAll()
                     return .handled
                 }
+
         }
     }
 
     private var canvas: some View {
         ZStack(alignment: .topLeading) {
             ForEach(bench.parts) { part in
-                let origin = bench.positions[part.id] ?? CGPoint(x: 20, y: 20)
-                let translation = drag?.id == part.id ? drag?.translation ?? .zero : .zero
-                let position = movedPosition(from: origin, by: translation)
-                partCard(part)
+                let turns = bench.rotations[part.id, default: 0]
+                let geometry = SchematicPartGeometry(part: part, turns: turns, appearance: bench.componentAppearance)
+                let position = displayedPosition(of: part.id)
+                let center = geometry.canvasOrigin(at: position, imported: part.importedSymbol != nil)
+                partCard(part, geometry: geometry)
+                    .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
                     .id(PartIdentity(id: part.id, component: ObjectIdentifier(part.component)))
-                    .simultaneousGesture(partDrag(part.id, origin: origin))
-                    .offset(x: position.x, y: position.y)
-                    .zIndex(drag?.id == part.id ? 1 : 0)
+                    .simultaneousGesture(partDrag(part.id))
+                    .rotationEffect(.degrees(Double(turns * 90)))
+                    .offset(x: center.x - geometry.size.width / 2, y: center.y - geometry.size.height / 2)
+                    .zIndex(drag?.parts.contains(part.id) == true ? 1 : 0)
             }
         }
+    }
+
+    private func displayedPosition(of id: Int) -> CGPoint {
+        let origin = bench.positions[id] ?? CGPoint(x: 20, y: 20)
+        guard !dragCancelled, let drag, drag.parts.contains(id) else { return origin }
+        return drag.translate(origin)
     }
 
     private var visibleWorld: CGRect {
@@ -255,9 +292,15 @@ struct WorkbenchView: View {
     private var fileBar: some View {
         HStack(spacing: 8) {
             Button("Open…", systemImage: "folder") { chooseFile(importing: false) }
-            Button("Save…", systemImage: "square.and.arrow.down", action: saveCircuit)
+            Button(bench.documentURL == nil ? "Save…" : "Save", systemImage: "square.and.arrow.down") { saveCircuit() }
             Button("Import…", systemImage: "square.and.arrow.down.on.square") { chooseFile(importing: true) }
             Spacer()
+            Button("Check Circuit", systemImage: "checkmark.circle") {
+                showingCircuitCheck.toggle()
+                selectedFinding = nil
+                if showingCircuitCheck { refreshCircuitCheck() }
+            }
+            .accessibilityAddTraits(showingCircuitCheck ? .isSelected : [])
         }
         .disabled(commands == nil)
         .controlSize(.small)
@@ -267,16 +310,19 @@ struct WorkbenchView: View {
 
     private var toolStrip: some View {
         VStack(spacing: 4) {
-            stripButton("Select", icon: "cursorarrow", active: !bench.wiringEnabled) {
+            stripButton("Select", icon: "cursorarrow", active: !bench.wiringEnabled && !placingProbe) {
                 setWiringEnabled(false)
             }
             .keyboardShortcut("v", modifiers: [])
-            .accessibilityAddTraits(bench.wiringEnabled ? [] : .isSelected)
+            .accessibilityAddTraits(bench.wiringEnabled || placingProbe ? [] : .isSelected)
             stripButton("Wire", icon: "point.topleft.down.to.point.bottomright.curvepath", active: bench.wiringEnabled) {
                 setWiringEnabled(true)
             }
             .keyboardShortcut("w", modifiers: [])
             .accessibilityAddTraits(bench.wiringEnabled ? .isSelected : [])
+            wireColourMenu
+            stripButton("Probe", icon: "eyedropper", active: placingProbe) { beginProbePlacement() }
+                .accessibilityAddTraits(placingProbe ? .isSelected : [])
             Divider()
             stripButton("Add Part…", icon: "plus") { showingLibrary = true }
                 .keyboardShortcut("a", modifiers: [])
@@ -297,6 +343,71 @@ struct WorkbenchView: View {
         .padding(.vertical, 6)
         .frame(width: 40)
         .background(.bar)
+    }
+
+    private var wireColourMenu: some View {
+        let selected = bench.wires.first { $0.id == bench.selectedWireID }
+        let colour = selected?.colour ?? bench.newWireColour
+        let title = selected == nil ? "New Wire Colour" : "Selected Wire Colour"
+        return Menu {
+            wireColourPicker(title, colour: colour) { choice in
+                if let selected {
+                    bench.setWireColour(choice, for: selected.id)
+                } else {
+                    bench.newWireColour = choice
+                }
+                canvasFocused = true
+            }
+        } label: {
+            Label {
+                Text(title)
+            } icon: {
+                Image(nsImage: wireColourSwatch(colour))
+            }
+            .labelStyle(.iconOnly)
+            .frame(width: 30, height: 30)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .accessibilityLabel(title)
+        .accessibilityValue(colour.title)
+        .help("\(title): \(colour.title)")
+    }
+
+    private func wireColourPicker(_ title: String, colour: WireColour,
+                                  onChange: @escaping (WireColour) -> Void) -> some View {
+        Picker(title, selection: Binding(get: { colour }, set: onChange)) {
+            ForEach(WireColour.allCases, id: \.self) { choice in
+                Text(choice.title).tag(choice)
+            }
+        }
+        .pickerStyle(.inline)
+    }
+
+    private func wireContextMenu(_ wire: WorkbenchWire) -> some View {
+        Group {
+            Menu("Wire Colour") {
+                wireColourPicker("Wire Colour", colour: wire.colour) { choice in
+                    bench.setWireColour(choice, for: wire.id)
+                }
+            }
+            Button("Remove Wire", role: .destructive) { bench.removeWire(wire.id) }
+        }
+    }
+
+    private func wireColourSwatch(_ colour: WireColour) -> NSImage {
+        let fill = NSColor(colour.stroke)
+        let border = NSColor.labelColor.withAlphaComponent(0.55)
+        return NSImage(size: NSSize(width: 16, height: 12), flipped: false) { bounds in
+            let outline = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 2, yRadius: 2)
+            fill.setFill()
+            outline.fill()
+            border.setStroke()
+            outline.lineWidth = 1
+            outline.stroke()
+            return true
+        }
     }
 
     private var instrumentStrip: some View {
@@ -325,6 +436,7 @@ struct WorkbenchView: View {
     }
 
     private func setWiringEnabled(_ enabled: Bool) {
+        endProbePlacement()
         if !enabled { bench.cancelWire() }
         bench.wiringEnabled = enabled
         canvasFocused = true
@@ -335,7 +447,17 @@ struct WorkbenchView: View {
             : bench.clockIsBehind ? "Clock behind"
             : bench.hasRunningClocks ? "Running" : "Ready"
         return HStack(spacing: 10) {
-            if let selected = bench.selectedTerminal {
+            if placement != nil {
+                Text("Click to place copies · Esc to cancel")
+            } else if let probeMessage {
+                Text(probeMessage).lineLimit(1)
+            } else if placingProbe, let channel = movingProbe ?? bench.nextScopeChannel {
+                Text("CH\(channel + 1) · Click a wire, junction or pin · Esc to cancel")
+                    .lineLimit(1)
+            } else if bench.nextScopeChannel == nil && !bench.wiringEnabled {
+                Text("Click a probe marker to move it or right-click to remove it")
+                    .lineLimit(1)
+            } else if let selected = bench.selectedTerminal {
                 Text("Wiring \(bench.label(for: selected)) · Click to bend, click a pin or an unambiguous wire segment to finish")
                     .lineLimit(1)
                 Button("Cancel", action: bench.cancelWire)
@@ -346,6 +468,14 @@ struct WorkbenchView: View {
                     .foregroundStyle(.secondary)
             }
             Spacer()
+            if !bench.scopeProbes.isEmpty || placingProbe {
+                let count = bench.scopeProbes.count
+                let limit = Oscilloscope.channelCount
+                Text("Probes \(count)/\(limit)")
+                    .monospacedDigit()
+                    .foregroundStyle(count == limit ? Color.orange : Color.secondary)
+                    .help("Click a probe marker to move it, or right-click to remove it.")
+            }
             Button(Double(camera.scale).formatted(.percent.precision(.fractionLength(0))), action: resetZoom)
                 .buttonStyle(.borderless)
                 .monospacedDigit()
@@ -365,24 +495,115 @@ struct WorkbenchView: View {
     }
 
     private var commands: WorkbenchActions? {
-        guard !showingLibrary, editingResistance == nil, editingCapacitance == nil,
-              !openingFile, !savingFile, importFile == nil, !confirmingClear else { return nil }
+        guard !showingLibrary, editingResistance == nil, editingCapacitance == nil, editingOscillator == nil,
+              importFile == nil else { return nil }
         return WorkbenchActions(
-            open: { chooseFile(importing: false) }, save: saveCircuit,
-            importCircuit: { chooseFile(importing: true) }, clear: { confirmingClear = true },
-            undo: bench.undo, redo: bench.redo, rotate: rotateSelected, oscilloscope: toggleScope,
+            open: { chooseFile(importing: false) }, save: { saveCircuit() }, saveAs: { saveCircuit(saveAs: true) },
+            importCircuit: { chooseFile(importing: true) }, clear: clearWorkbench,
+            undo: { placement = nil; bench.undo() }, redo: { placement = nil; bench.redo() },
+            rotate: rotateSelected, oscilloscope: toggleScope,
             wireList: $showsWireList,
+            componentAppearance: Binding(get: { bench.componentAppearance }, set: { appearance in
+                bench.hoveredTerminal = nil
+                bench.componentAppearance = appearance
+                if let archive = placement?.archive { beginPlacement(archive) }
+            }),
             zoomIn: { zoom(by: 1.25) }, zoomOut: { zoom(by: 0.8) },
             resetZoom: resetZoom, fitCircuit: fitCircuit,
             powerMode: Binding(get: { bench.powerMode }, set: bench.setPowerMode),
             canUndo: bench.canUndo, canRedo: bench.canRedo, canRotate: selectedParts.count == 1,
-            hasCircuit: !bench.parts.isEmpty, zoom: camera.scale
+            hasCircuit: bench.hasCircuit, canClear: canClear, zoom: camera.scale
         )
     }
 
     private func rotateSelected(_ steps: Int) {
         if selectedParts.count == 1, let id = selectedParts.first {
             rotationAction(for: id)(steps)
+        }
+    }
+
+    @ViewBuilder
+    private var circuitCheckPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Circuit Check").font(.headline)
+                Spacer()
+                Button("Refresh Check", systemImage: "arrow.clockwise", action: refreshCircuitCheck)
+                    .labelStyle(.iconOnly)
+                Button("Close Circuit Check", systemImage: "xmark") {
+                    showingCircuitCheck = false
+                    selectedFinding = nil
+                }
+                .labelStyle(.iconOnly)
+            }
+            .padding(12)
+            Divider()
+            if !bench.isStable {
+                Text("Simulation did not settle. Check for feedback loops and conflicting outputs.")
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+            }
+            if findings.isEmpty {
+                Text(bench.parts.isEmpty ? "Add components to check a circuit." : "No issues found by the built-in checks.")
+                    .foregroundStyle(.secondary)
+                    .padding(12)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(findings) { finding in
+                            Button {
+                                selectedFinding = finding.id
+                                revealFinding(finding.target)
+                            } label: {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(finding.title).font(.subheadline.weight(.semibold))
+                                    Text(finding.location).foregroundStyle(.secondary)
+                                    Text("Current state · \((bench.currentState(for: finding) ?? finding.state).description)")
+                                        .font(.caption.monospaced())
+                                    Text(finding.suggestion).font(.callout)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(8)
+                                .background(selectedFinding == finding.id ? Color.accentColor.opacity(0.15) : .clear,
+                                            in: .rect(cornerRadius: 6))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityAddTraits(selectedFinding == finding.id ? .isSelected : [])
+                        }
+                    }
+                    .padding(8)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(width: 270)
+        .background(.bar)
+    }
+
+    private func refreshCircuitCheck() {
+        findings = bench.checkCircuit()
+        if !findings.contains(where: { $0.id == selectedFinding }) { selectedFinding = nil }
+    }
+
+    private func revealFinding(_ target: CircuitFinding.Target) {
+        let pins = displayedPinLocations()
+        let point: CGPoint?
+        switch target {
+        case .pin(let terminal):
+            point = pins[terminal]
+        case .wire(let id):
+            guard let wire = bench.wires.first(where: { $0.id == id }) else { return }
+            func location(_ terminal: WorkbenchTerminal) -> CGPoint? {
+                terminal.isJunction ? bench.junctions[terminal.pinNumber] : pins[terminal]
+            }
+            guard let first = location(wire.first), let second = location(wire.second) else { return }
+            point = wirePath(wire.route(from: first, to: second)).boundingRect.center
+        }
+        if let point {
+            let screen = camera.screenPoint(at: point)
+            camera.pan(x: viewportSize.width / 2 - screen.x, y: viewportSize.height / 2 - screen.y)
         }
     }
 
@@ -420,9 +641,7 @@ struct WorkbenchView: View {
                             }
                             .buttonStyle(.plain)
                             .accessibilityAddTraits(bench.selectedWireID == wire.id ? .isSelected : [])
-                            .contextMenu {
-                                Button("Remove Wire", role: .destructive) { bench.removeWire(wire.id) }
-                            }
+                            .contextMenu { wireContextMenu(wire) }
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -454,37 +673,75 @@ struct WorkbenchView: View {
         }
     }
 
-    private func saveCircuit() {
-        do {
-            exportArchive = try WorkbenchArchive(bench: bench)
-            savingFile = true
-        } catch {
-            fileError = error.localizedDescription
+    private func saveCircuit(saveAs: Bool = false) {
+        workflow.perform { workflow.save(bench, saveAs: saveAs) }
+    }
+
+    private func clearWorkbench() {
+        workflow.perform {
+            guard workflow.permitsLeaving(bench) else { return false }
+            bench.clear()
+            placement = nil
+            selectedParts.removeAll()
+            occupiedBounds.removeAll()
+            camera = WorkbenchViewport()
+            return true
         }
     }
 
     private func chooseFile(importing: Bool) {
-        openingImport = importing
-        openingFile = true
+        workflow.perform {
+            let panel = NSOpenPanel()
+            panel.allowedContentTypes = [.data]
+            panel.allowsMultipleSelection = false
+            guard panel.runModal() == .OK, let url = panel.url else { return false }
+            do {
+                if importing {
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    let text = try String(contentsOf: url, encoding: .utf8)
+                    let preview = try CircuitImportPreview.read(text, filenameExtension: url.pathExtension)
+                    importFile = CircuitImportFile(name: url.lastPathComponent, preview: preview)
+                } else {
+                    guard workflow.permitsLeaving(bench) else { return false }
+                    let accessing = url.startAccessingSecurityScopedResource()
+                    defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                    let archive = try JSONDecoder().decode(WorkbenchArchive.self, from: Data(contentsOf: url))
+                    try bench.open(archive, at: url)
+                    placement = nil
+                    camera = WorkbenchViewport()
+                    selectedParts.removeAll()
+                    occupiedBounds.removeAll()
+                }
+                return true
+            } catch {
+                workflow.showError(error)
+                return false
+            }
+        }
     }
 
-    private func openCircuit(_ result: Result<URL, Error>) {
-        do {
-            let url = try result.get()
-            let accessing = url.startAccessingSecurityScopedResource()
-            defer { if accessing { url.stopAccessingSecurityScopedResource() } }
-            if openingImport {
-                let text = try String(contentsOf: url, encoding: .utf8)
-                let preview = try CircuitImportPreview.read(text, filenameExtension: url.pathExtension)
-                importFile = CircuitImportFile(name: url.lastPathComponent, preview: preview)
-                return
-            }
-            let archive = try JSONDecoder().decode(WorkbenchArchive.self, from: Data(contentsOf: url))
-            try bench.open(archive)
-            camera = WorkbenchViewport()
+    private func importCircuit(_ file: CircuitImportFile, replacing: Bool) {
+        workflow.perform {
+            if replacing && !workflow.permitsLeaving(bench) { return false }
+            guard let first = bench.importCircuit(file.preview, replacing: replacing) else { return false }
+            placement = nil
             selectedParts.removeAll()
-        } catch {
-            fileError = error.localizedDescription
+            occupiedBounds.removeAll()
+            importFile = nil
+            if let point = bench.positions[first.id] {
+                if first.importedSymbol != nil {
+                    let top = bench.parts.filter { $0.id >= first.id }.compactMap { part -> CGFloat? in
+                        guard let position = bench.positions[part.id], let drawing = part.importedSymbol else { return nil }
+                        let quarterTurn = bench.rotations[part.id, default: 0] % 2 != 0
+                        return position.y - (quarterTurn ? drawing.bounds.width : drawing.bounds.height) / 2
+                    }.min() ?? point.y
+                    camera.reveal(top: top - 24)
+                } else {
+                    camera.reveal(top: point.y - 20)
+                }
+            }
+            return true
         }
     }
 
@@ -547,41 +804,197 @@ struct WorkbenchView: View {
         bench.placeNewPart(id, at: snap(best))
     }
 
-    private func movedPosition(from origin: CGPoint, by translation: CGSize) -> CGPoint {
-        guard translation != .zero else { return origin }
-        return snap(CGPoint(x: max(0, origin.x + translation.width),
-                            y: max(0, origin.y + translation.height)))
-    }
-
-    private func partDrag(_ id: Int, origin: CGPoint) -> some Gesture {
+    private func partDrag(_ id: Int) -> some Gesture {
         DragGesture(minimumDistance: 6 / camera.scale, coordinateSpace: .named(canvasSpace))
             .updating($drag) { value, state, _ in
-                state = PartDrag(id: id, translation: value.translation)
+                guard bench.selectedTerminal == nil else { return }
+                let ids = selectedParts.contains(id) ? selectedParts : [id]
+                state = bench.movement(of: ids, by: value.translation)
             }
             .onEnded { value in
-                bench.movePart(id, from: origin, to: movedPosition(from: origin, by: value.translation))
-                selectPart(id)
+                guard !dragCancelled, bench.selectedTerminal == nil else { return }
+                let ids = selectedParts.contains(id) ? selectedParts : [id]
+                bench.moveParts(bench.movement(of: ids, by: value.translation))
+                selectedParts = ids
+                bench.selectWire(nil)
+                canvasFocused = true
             }
     }
 
-    private func wireLayer(anchors: [CanvasItem: Anchor<CGRect>]) -> some View {
+    private let clipboardType = NSPasteboard.PasteboardType("com.cmos4000simulator.workbench-selection")
+    private var canCopySelection: Bool {
+        !selectedParts.isEmpty && placement == nil && drag == nil && bench.selectedTerminal == nil
+    }
+    private var canPasteSelection: Bool {
+        placement == nil && drag == nil && bench.selectedTerminal == nil
+    }
+
+    private func handleEditShortcut(_ key: String) -> Bool {
+        guard canvasFocused, !placingProbe, !showingLibrary, editingResistance == nil,
+              editingCapacitance == nil, editingOscillator == nil, importFile == nil else { return false }
+        switch key {
+        case "c":
+            guard canCopySelection, let data = try? bench.copyParts(selectedParts).encoded() else { return false }
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setData(data, forType: clipboardType)
+        case "v":
+            guard canPasteSelection,
+                  let data = NSPasteboard.general.data(forType: clipboardType),
+                  let archive = try? JSONDecoder().decode(WorkbenchArchive.self, from: data) else { return false }
+            beginPlacement(archive)
+        case "d":
+            guard canCopySelection, let archive = try? bench.copyParts(selectedParts) else { return false }
+            beginPlacement(archive)
+        case "delete":
+            guard canPasteSelection else { return false }
+            if bench.selectedWireID != nil {
+                bench.removeSelectedWire()
+            } else {
+                guard !selectedParts.isEmpty else { return false }
+                bench.removeParts(selectedParts)
+                selectedParts.removeAll()
+            }
+        default:
+            return false
+        }
+        return true
+    }
+
+    private func beginPlacement(_ archive: WorkbenchArchive) {
+        guard let circuit = try? archive.makeCircuit(), !circuit.parts.isEmpty else { return }
+        endProbePlacement()
+        var pinLocations: [WorkbenchTerminal: CGPoint] = [:]
+        let outlines = circuit.parts.map { part in
+            let position = circuit.positions[part.id] ?? CGPoint(x: 20, y: 20)
+            let turns = circuit.rotations[part.id, default: 0]
+            let geometry = SchematicPartGeometry(part: part, turns: turns, appearance: bench.componentAppearance)
+            let imported = part.importedSymbol != nil
+            for pin in geometry.pins.keys {
+                pinLocations[WorkbenchTerminal(partID: part.id, pinNumber: pin)] =
+                    geometry.location(of: pin, at: position, turns: turns, imported: imported)
+            }
+            let center = geometry.canvasOrigin(at: position, imported: imported)
+            let size = turns.isMultiple(of: 2) ? geometry.size
+                : CGSize(width: geometry.size.height, height: geometry.size.width)
+            return CGRect(x: center.x - size.width / 2, y: center.y - size.height / 2,
+                          width: size.width, height: size.height)
+        }
+        func location(_ endpoint: WorkbenchTerminal) -> CGPoint? {
+            endpoint.isJunction ? archive.junctions[endpoint.pinNumber] : pinLocations[endpoint]
+        }
+        let routes = circuit.wires.compactMap { wire -> [CGPoint]? in
+            guard let first = location(wire.first), let second = location(wire.second),
+                  wire.isDrawn(from: first, to: second) else { return nil }
+            return wire.route(from: first, to: second)
+        }
+        let bounds = outlines.reduce(CGRect.null) { $0.union($1) }
+        placementPointer = nil
+        placement = Placement(archive: archive, anchor: bounds.center, outlines: outlines, routes: routes)
+        canvasFocused = true
+    }
+
+    private func placementOffset(_ placement: Placement, at point: CGPoint) -> CGPoint {
+        let world = camera.worldPoint(at: point)
+        return snap(CGPoint(x: world.x - placement.anchor.x, y: world.y - placement.anchor.y))
+    }
+
+    private func placementLayer(_ placement: Placement) -> some View {
+        Canvas { context, _ in
+            let point = placementPointer ?? CGRect(origin: .zero, size: viewportSize).center
+            let delta = placementOffset(placement, at: point)
+            var world = context
+            world.translateBy(x: camera.origin.x, y: camera.origin.y)
+            world.scaleBy(x: camera.scale, y: camera.scale)
+            world.translateBy(x: delta.x, y: delta.y)
+            let colour = Color.accentColor
+            for route in placement.routes {
+                world.stroke(wirePath(route), with: .color(colour), lineWidth: 1.5)
+            }
+            for outline in placement.outlines {
+                world.fill(Path(outline), with: .color(colour.opacity(0.15)))
+                world.stroke(Path(outline), with: .color(colour),
+                             style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+            }
+        }
+        .contentShape(Rectangle())
+        .onContinuousHover { phase in
+            if case .active(let point) = phase { placementPointer = point }
+        }
+        .gesture(SpatialTapGesture().onEnded { tap in
+            let delta = placementOffset(placement, at: tap.location)
+            if let ids = try? bench.pasteParts(placement.archive, by: CGSize(width: delta.x, height: delta.y)) {
+                selectedParts = ids
+            }
+            self.placement = nil
+            canvasFocused = true
+        })
+        .accessibilityHidden(true)
+    }
+
+    private func displayedPinLocations() -> [WorkbenchTerminal: CGPoint] {
+        bench.parts.reduce(into: [:]) { result, part in
+            let turns = bench.rotations[part.id, default: 0]
+            let layout = SchematicPartGeometry(part: part, turns: turns, appearance: bench.componentAppearance)
+            let position = displayedPosition(of: part.id)
+            for number in layout.pins.keys {
+                result[WorkbenchTerminal(partID: part.id, pinNumber: number)] =
+                    layout.location(of: number, at: position, turns: turns, imported: part.importedSymbol != nil)
+            }
+        }
+    }
+
+    private func pinMarkers(at locations: [WorkbenchTerminal: CGPoint]) -> some View {
+        let explicitNoConnects = Set(bench.parts.flatMap { part in
+            (part.importedSymbol?.noConnectPins ?? []).map { WorkbenchTerminal(partID: part.id, pinNumber: $0) }
+        })
+        return Canvas { context, _ in
+            for (terminal, point) in locations {
+                if bench.showsOpenPinMarker(terminal, explicitNoConnect: explicitNoConnects.contains(terminal)) {
+                    let ring = CGRect(x: point.x - 2.5, y: point.y - 2.5, width: 5, height: 5)
+                    context.stroke(Path(ellipseIn: ring), with: .color(Color(red: 0.65, green: 0, blue: 0)), lineWidth: 1)
+                }
+                if selectedFinding?.target == .pin(terminal) {
+                    let radius = 11 / camera.scale
+                    let ring = CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)
+                    context.fill(Path(ellipseIn: ring), with: .color(.orange.opacity(0.25)))
+                    context.stroke(Path(ellipseIn: ring), with: .color(.orange), lineWidth: 2.5 / camera.scale)
+                }
+                let selected = bench.selectedTerminal == terminal
+                if selected || (bench.wiringEnabled && bench.hoveredTerminal == terminal) {
+                    let ring = CGRect(x: point.x - 4.5, y: point.y - 4.5, width: 9, height: 9)
+                    context.stroke(Path(ellipseIn: ring), with: .color(.accentColor.opacity(selected ? 1 : 0.65)),
+                                   lineWidth: 1.2)
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+
+    private func displayedJunctions(movement: Workbench.Movement?) -> [Int: CGPoint] {
+        guard let movement else { return bench.junctions }
+        var junctions = bench.junctions
+        for id in movement.junctions { junctions[id] = junctions[id].map(movement.translate) }
+        return junctions
+    }
+
+    private func wireLayer(anchors: [CanvasItem: Anchor<CGRect>], pinLocations: [WorkbenchTerminal: CGPoint],
+                           movement: Workbench.Movement?) -> some View {
         GeometryReader { geometry in
+            let junctions = displayedJunctions(movement: movement)
             let location: (WorkbenchTerminal) -> CGPoint? = { endpoint in
-                if endpoint.isJunction { return bench.junctions[endpoint.pinNumber] }
-                return anchors[.terminal(endpoint)].map { geometry[$0].center }
+                endpoint.isJunction ? junctions[endpoint.pinNumber] : pinLocations[endpoint]
             }
-            let routes = bench.wires.compactMap { wire -> (wire: WorkbenchWire, points: [CGPoint], path: Path)? in
-                guard let first = location(wire.first), let second = location(wire.second),
-                      wire.isDrawn(from: first, to: second) else { return nil }
-                let points = wire.route(from: first, to: second)
-                return (wire, points, wirePath(points))
-            }
+            let locations = pinLocations.merging(Dictionary(uniqueKeysWithValues: junctions.map {
+                (WorkbenchTerminal.junction($0.key), $0.value)
+            })) { current, _ in current }
+            let routes = canvasWires(at: locations, movement: movement)
             let visibleWires = routes.filter { $0.points.count > 1 }.map(\.wire)
             let visibleIDs = Set(visibleWires.map(\.id))
             let pinContacts = bench.wires.filter {
                 $0.sourceRoute == .pinAttachment && !visibleIDs.contains($0.id)
             }
-            let dots = bench.junctionDots(visible: visibleWires, pinContacts: pinContacts)
+            let dots = bench.junctionDots(visible: visibleWires, pinContacts: pinContacts, at: junctions)
 
             let partBounds = anchors.compactMap { key, anchor -> (Int, CGRect)? in
                 guard case .part(let id) = key else { return nil }
@@ -595,12 +1008,24 @@ struct WorkbenchView: View {
                 Canvas { context, _ in
                     for route in routes {
                         let selected = route.wire.id == bench.selectedWireID
-                        context.stroke(route.path, with: .color(selected ? .accentColor : .green),
-                                       lineWidth: selected ? 3 : 1.5)
+                        if selected {
+                            context.stroke(route.path, with: .color(.accentColor.opacity(0.75)),
+                                           style: StrokeStyle(lineWidth: max(5, 5 / camera.scale),
+                                                              lineCap: .round, lineJoin: .round))
+                        }
+                        drawWire(route.path, colour: route.wire.colour, in: context)
+                    }
+
+                    if case .wire(let id) = selectedFinding?.target,
+                       let route = routes.first(where: { $0.wire.id == id }) {
+                        context.stroke(route.path, with: .color(.orange),
+                                       style: StrokeStyle(lineWidth: 4 / camera.scale, lineCap: .round, lineJoin: .round))
                     }
 
                     for point in dots {
-                        context.fill(schematicJunction(at: point), with: .color(.green))
+                        let dot = schematicJunction(at: point)
+                        context.fill(dot, with: .color(.primary))
+                        context.stroke(dot, with: .color(colourScheme == .dark ? .black : .white), lineWidth: 0.8)
                     }
 
                     for mark in bench.schematicMarks {
@@ -619,14 +1044,13 @@ struct WorkbenchView: View {
 
                     if let selected = bench.selectedTerminal, let start = location(selected) {
                         var bends = bench.pendingBends
-                        if let pointerLocation {
+                        if let hovered = bench.hoveredTerminal, let endpoint = location(hovered) {
+                            bends.append(endpoint)
+                        } else if let pointerLocation {
                             bends.append(snap(canvasPoint(at: pointerLocation)))
                         }
                         let path = wirePath(WorkbenchWire.gridRoute(from: start, through: bends))
-                        context.stroke(path, with: .color(.green),
-                                       style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
-                        let marker = CGRect(x: start.x - 6, y: start.y - 6, width: 12, height: 12)
-                        context.stroke(Path(ellipseIn: marker), with: .color(.green), lineWidth: 1.5)
+                        drawWire(path, colour: bench.newWireColour, in: context, dash: [5, 3])
                     }
                 }
                 .allowsHitTesting(false)
@@ -656,9 +1080,7 @@ struct WorkbenchView: View {
                                 }
                             }
                         })
-                        .contextMenu {
-                            Button("Remove Wire", role: .destructive) { bench.removeWire(route.wire.id) }
-                        }
+                        .contextMenu { wireContextMenu(route.wire) }
                 }
             }
             .accessibilityHidden(true)
@@ -667,6 +1089,207 @@ struct WorkbenchView: View {
             }
             .onChange(of: bounds, initial: true) { _, bounds in circuitBounds = bounds }
         }
+    }
+
+
+    private func beginProbePlacement(moving channel: Int? = nil) {
+        if placingProbe && channel == nil {
+            endProbePlacement()
+            return
+        }
+        endProbePlacement()
+        guard channel != nil || bench.nextScopeChannel != nil else {
+            probeMessage = "All channels occupied · Click a marker to move it or right-click to remove it"
+            return
+        }
+        bench.cancelWire()
+        bench.wiringEnabled = false
+        placement = nil
+        movingProbe = channel
+        placingProbe = true
+        canvasFocused = true
+    }
+
+    private func endProbePlacement() {
+        placingProbe = false
+        movingProbe = nil
+        probePointer = nil
+        probeMessage = nil
+    }
+
+    private struct CanvasWire {
+        let wire: WorkbenchWire
+        let points: [CGPoint]
+        let path: Path
+    }
+
+    private func drawWire(_ path: Path, colour: WireColour, in context: GraphicsContext, dash: [CGFloat] = []) {
+        if colour == .yellow || (colour == .black && colourScheme == .dark) {
+            let outline: Color = colour == .yellow ? Color(white: 0.35) : Color(white: 0.72)
+            context.stroke(path, with: .color(outline), style: StrokeStyle(lineWidth: 2.8, lineJoin: .round, dash: dash))
+        }
+        context.stroke(path, with: .color(colour.stroke),
+                       style: StrokeStyle(lineWidth: 1.5, lineJoin: .round, dash: dash))
+    }
+
+    private func canvasWires(at locations: [WorkbenchTerminal: CGPoint],
+                             movement: Workbench.Movement?) -> [CanvasWire] {
+        let wires = movement.map { bench.wires.map($0.wire) } ?? bench.wires
+        return wires.compactMap { wire in
+            guard let first = locations[wire.first], let second = locations[wire.second],
+                  wire.isDrawn(from: first, to: second) else { return nil }
+            let points = wire.route(from: first, to: second)
+            return CanvasWire(wire: wire, points: points, path: wirePath(points))
+        }
+    }
+
+    private func probeLayer(pins: [WorkbenchTerminal: CGPoint], movement: Workbench.Movement?) -> some View {
+        let locations = pins.merging(Dictionary(uniqueKeysWithValues: displayedJunctions(movement: movement).map {
+            (WorkbenchTerminal.junction($0.key), $0.value)
+        })) { current, _ in current }
+        let routes = canvasWires(at: locations, movement: movement)
+        let target = probePointer.flatMap { probeTarget(at: $0, terminals: locations, routes: routes) }
+        let net = target.flatMap { bench.scopeNet(for: $0) }
+        let highlighted = net.map { net in routes.filter { bench.circuitNet(at: $0.wire.first) === net } } ?? []
+        var markers: [(channel: Int, anchor: CGPoint, center: CGPoint)] = []
+        for channel in bench.scopeProbes.keys.sorted() {
+            guard let probe = bench.scopeProbes[channel],
+                  let point = probeLocation(probe, terminals: locations, routes: routes) else { continue }
+            let anchor = camera.screenPoint(at: point)
+            var center = CGPoint(x: anchor.x + 10, y: anchor.y - 12)
+            while markers.contains(where: { hypot($0.center.x - center.x, $0.center.y - center.y) < 17 }) {
+                center.x += 18
+            }
+            markers.append((channel, anchor, center))
+        }
+        return ZStack {
+            if placingProbe {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onContinuousHover { phase in
+                        if case .active(let point) = phase { probePointer = point }
+                        else { probePointer = nil }
+                    }
+                    .gesture(SpatialTapGesture().onEnded { tap in
+                        guard let probe = probeTarget(at: tap.location, terminals: locations, routes: routes),
+                              bench.placeScopeProbe(probe, moving: movingProbe) else {
+                            probeMessage = "Choose a pin, junction or unambiguous wire segment"
+                            return
+                        }
+                        endProbePlacement()
+                    })
+                    .accessibilityHidden(true)
+            }
+            Canvas { context, _ in
+                var world = context
+                world.translateBy(x: camera.origin.x, y: camera.origin.y)
+                world.scaleBy(x: camera.scale, y: camera.scale)
+                for route in highlighted {
+                    world.stroke(route.path, with: .color(.accentColor),
+                                 style: StrokeStyle(lineWidth: 4 / camera.scale, lineCap: .round, lineJoin: .round))
+                }
+                if let target, let point = probeLocation(target, terminals: locations, routes: routes) {
+                    let screen = camera.screenPoint(at: point)
+                    let ring = CGRect(x: screen.x - 6, y: screen.y - 6, width: 12, height: 12)
+                    context.stroke(Path(ellipseIn: ring), with: .color(.accentColor), lineWidth: 2)
+                }
+                for marker in markers {
+                    var lead = Path()
+                    lead.move(to: marker.anchor)
+                    lead.addLine(to: marker.center)
+                    context.stroke(lead, with: .color(oscilloscopeChannelColours[marker.channel]), lineWidth: 1.5)
+                }
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            if !placingProbe && placement == nil {
+                ForEach(markers, id: \.channel) { marker in
+                    Button { beginProbePlacement(moving: marker.channel) } label: {
+                        probeBadge(marker.channel)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Move CH\(marker.channel + 1) probe")
+                    .help("Click to move CH\(marker.channel + 1). Right-click to remove.")
+                    .contextMenu {
+                        Button("Move CH\(marker.channel + 1)") { beginProbePlacement(moving: marker.channel) }
+                        Button("Remove CH\(marker.channel + 1)", role: .destructive) {
+                            bench.assignScopeProbe(nil, to: marker.channel)
+                            endProbePlacement()
+                        }
+                    }
+                    .position(marker.center)
+                }
+            } else {
+                ForEach(markers, id: \.channel) { marker in
+                    probeBadge(marker.channel).position(marker.center)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func probeBadge(_ channel: Int) -> some View {
+        Text("\(channel + 1)")
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(.black)
+            .frame(width: 16, height: 16)
+            .background(oscilloscopeChannelColours[channel], in: .circle)
+            .overlay { Circle().strokeBorder(.black.opacity(0.65)) }
+    }
+
+    private func probeTarget(at screenPoint: CGPoint, terminals: [WorkbenchTerminal: CGPoint],
+                             routes: [CanvasWire]) -> ScopeProbe? {
+        let point = camera.worldPoint(at: screenPoint)
+        let radius = 6 / camera.scale
+        let nearby = terminals.compactMap { terminal, position -> (WorkbenchTerminal, CGFloat)? in
+            let distance = hypot(point.x - position.x, point.y - position.y)
+            guard distance <= radius, !terminal.isJunction || bench.circuitNet(at: terminal) != nil else { return nil }
+            return (terminal, distance)
+        }.sorted { $0.1 < $1.1 }
+        if let (terminal, distance) = nearby.first {
+            let net = bench.circuitNet(at: terminal)
+            guard !nearby.dropFirst().contains(where: {
+                abs($0.1 - distance) < 0.01 && (net == nil || bench.circuitNet(at: $0.0) !== net)
+            }) else { return nil }
+            return net == nil ? .pin(terminal) : .netPin(terminal)
+        }
+        let hits = routes.compactMap { route -> (CanvasWire, RouteProjection)? in
+            guard let projection = project(point, onto: route.points), projection.distance <= radius else { return nil }
+            return (route, projection)
+        }.sorted { $0.1.distance < $1.1.distance }
+        guard let (route, hit) = hits.first else { return nil }
+        let net = bench.circuitNet(at: route.wire.first)
+        guard !hits.dropFirst().contains(where: {
+            abs($0.1.distance - hit.distance) < 2 / camera.scale && bench.circuitNet(at: $0.0.wire.first) !== net
+        }) else { return nil }
+        let prefix = Array(route.points.prefix(hit.segment + 1)) + [hit.point]
+        return .wirePoint(id: route.wire.id, fraction: routeLength(prefix) / routeLength(route.points))
+    }
+
+    private func probeLocation(_ probe: ScopeProbe, terminals: [WorkbenchTerminal: CGPoint],
+                               routes: [CanvasWire]) -> CGPoint? {
+        if let terminal = probe.terminal { return terminals[terminal] }
+        guard let points = routes.first(where: { $0.wire.id == probe.wireID })?.points else {
+            return bench.wires.first(where: { $0.id == probe.wireID }).flatMap { terminals[$0.first] }
+        }
+        let fraction: Double
+        if case .wirePoint(_, let stored) = probe { fraction = stored }
+        else { fraction = 0.5 }
+        var remaining = routeLength(points) * fraction
+        for (start, end) in zip(points, points.dropFirst()) {
+            let length = hypot(end.x - start.x, end.y - start.y)
+            if length > 0 && remaining <= length {
+                return CGPoint(x: start.x + (end.x - start.x) * remaining / length,
+                               y: start.y + (end.y - start.y) * remaining / length)
+            }
+            remaining -= length
+        }
+        return points.last
+    }
+
+    private func routeLength(_ points: [CGPoint]) -> CGFloat {
+        zip(points, points.dropFirst()).reduce(0) { $0 + hypot($1.1.x - $1.0.x, $1.1.y - $1.0.y) }
     }
 
     private func measuredBounds(parts: [CGRect], routes: [Path], marks: [SchematicMark]) -> CGRect? {
@@ -702,6 +1325,7 @@ struct WorkbenchView: View {
         .onContinuousHover { phase in
             switch phase {
             case .active(let point):
+                bench.hoveredTerminal = nil
                 if bench.selectedTerminal != nil { pointerLocation = point }
             case .ended:
                 pointerLocation = nil
@@ -714,6 +1338,7 @@ struct WorkbenchView: View {
             } else {
                 bench.selectWire(nil)
                 selectedParts.removeAll()
+                canvasFocused = true
             }
         })
         .simultaneousGesture(
@@ -761,8 +1386,10 @@ struct WorkbenchView: View {
         Path { $0.addLines(points) }
     }
 
-    private func connect(to wire: WorkbenchWire, points: [CGPoint], near click: CGPoint) {
-        var closest: (point: CGPoint, segment: Int, distance: CGFloat)?
+    private typealias RouteProjection = (point: CGPoint, segment: Int, distance: CGFloat)
+
+    private func project(_ click: CGPoint, onto points: [CGPoint]) -> RouteProjection? {
+        var closest: RouteProjection?
         for index in points.indices.dropLast() {
             let start = points[index]
             let end = points[index + 1]
@@ -775,14 +1402,17 @@ struct WorkbenchView: View {
             let distance = hypot(projection.x - click.x, projection.y - click.y)
             if closest == nil || distance < closest!.distance { closest = (projection, index, distance) }
         }
-        guard let closest, let first = points.first, let last = points.last else { return }
+        return closest
+    }
+
+    private func connect(to wire: WorkbenchWire, points: [CGPoint], near click: CGPoint) {
+        guard let closest = project(click, onto: points),
+              let first = points.first, let last = points.last else { return }
         let a = points[closest.segment]
         let b = points[closest.segment + 1]
         let snapped = snap(closest.point)
         let point: CGPoint
-        if wire.sourceRoute == .straight {
-            point = closest.point
-        } else if a.y == b.y {
+        if a.y == b.y {
             point = CGPoint(x: min(max(snapped.x, min(a.x, b.x)), max(a.x, b.x)), y: a.y)
         } else {
             point = CGPoint(x: a.x, y: min(max(snapped.y, min(a.y, b.y)), max(a.y, b.y)))
@@ -794,59 +1424,47 @@ struct WorkbenchView: View {
         } else {
             bench.joinWire(wire.id, at: point,
                            before: Array(points.dropFirst().prefix(closest.segment)),
-                           after: Array(points.dropFirst(closest.segment + 1).dropLast()))
+                           after: Array(points.dropFirst(closest.segment + 1).dropLast()),
+                           splitFraction: routeLength(Array(points.prefix(closest.segment + 1)) + [point]) / routeLength(points))
         }
     }
 
     @ViewBuilder
-    private func partCard(_ part: WorkbenchPart) -> some View {
+    private func partCard(_ part: WorkbenchPart, geometry: SchematicPartGeometry) -> some View {
         if let drawing = part.importedSymbol {
             ImportedSymbolView(drawing: drawing, part: part, bench: bench, isSelected: selectedParts.contains(part.id),
                                select: { selectPart(part.id) }, rotate: rotationAction(for: part.id),
                                editResistance: { editingResistance = part.component as? Resistor },
                                editCapacitance: { editingCapacitance = part.component as? Capacitor })
         } else {
-            standardPartCard(part)
+            standardPartCard(part, xorLayout: geometry.xorLayout)
         }
     }
 
-    private func standardPartCard(_ part: WorkbenchPart) -> some View {
+    private func standardPartCard(_ part: WorkbenchPart, xorLayout: CD4070SchematicLayout?) -> some View {
         let isSelected = selectedParts.contains(part.id)
         let select = { selectPart(part.id) }
         let rotate = rotationAction(for: part.id)
 
-        return VStack(alignment: .leading, spacing: 10) {
-            if let placement = part.unitPlacement,
-               let symbol = KiCadSymbol.chipUnits[placement.kind]?[placement.unit.id] {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if let header = part.component as? PinHeader, let symbol = KiCadSymbol.pinHeaders[header.kind] {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if let kind = CounterChip.kind(of: part.component), let symbol = KiCadSymbol.additionalCounters[kind] {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if let device = part.component as? AnalogSwitch, let symbol = KiCadSymbol.analogSwitches[device.kind] {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if part.component is NE555, let symbol = KiCadSymbol.ne555 {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-                    .help("NE555: digital inputs or standard RC astable/monostable wiring. CONT may be open or bypassed to GND.")
-            } else if part.component is CD4510, let symbol = KiCadSymbol.counter {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if part.component is CD4060, let symbol = KiCadSymbol.counter4060 {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if let driver = part.component as? SevenSegmentDriver, let symbol = KiCadSymbol.displayDrivers[driver.kind] {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if part.component is MAN72A, let symbol = KiCadSymbol.man72a {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if part.component is MAN74A, let symbol = KiCadSymbol.man74a {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if part.component is NPN2N3904, let symbol = KiCadSymbol.npn2N3904 {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else if let capacitor = part.component as? Capacitor, let symbol = KiCadSymbol.capacitors[capacitor.kind] {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate, editCapacitance: { editingCapacitance = capacitor })
-            } else if let resistor = part.component as? Resistor, let symbol = KiCadSymbol.smallResistor {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench,
-                                    isSelected: isSelected, select: select, rotate: rotate, editResistance: { editingResistance = resistor })
-            } else if part.component is Diode1N4148, let symbol = KiCadSymbol.diode1N4148 {
-                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
+        return Group {
+            if bench.componentAppearance == .physicalDIP, let package = DIPPackage(part: part) {
+                DIPPackageView(package: package, part: part, bench: bench, isSelected: isSelected,
+                               select: select, rotate: rotate)
+            } else if let xorLayout {
+                ZStack(alignment: .topLeading) {
+                    ForEach(xorLayout.units) { unit in
+                        SchematicSymbolView(symbol: unit.symbol, part: unit.part, bench: bench,
+                                            isSelected: isSelected, select: select, rotate: rotate)
+                            .offset(x: unit.origin.x, y: unit.origin.y)
+                    }
+                }
+                .frame(width: xorLayout.size.width, height: xorLayout.size.height, alignment: .topLeading)
+            } else if let symbol = part.librarySymbol(for: bench.componentAppearance) {
+                SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select,
+                                    rotate: rotate,
+                                    editResistance: (part.component as? Resistor).map { resistor in { editingResistance = resistor } },
+                                    editCapacitance: (part.component as? Capacitor).map { capacitor in { editingCapacitance = capacitor } },
+                                    editFrequency: part.component is CXO_DIP8 ? { editingOscillator = part } : nil)
             } else if let source = part.component as? WorkbenchSwitch {
                 LogicSwitchSymbol(partID: part.id, source: source, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if let power = part.component as? WorkbenchPower {
@@ -856,27 +1474,6 @@ struct WorkbenchView: View {
                 ClockSourceSymbol(part: part, source: clock, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
             } else if part.component is WorkbenchLED {
                 LEDIndicatorSymbol(partID: part.id, bench: bench, isSelected: isSelected, select: select, rotate: rotate)
-            } else {
-                partHeading(part)
-                    .font(.headline)
-                    .foregroundStyle(isSelected ? Color.schematicSelectionInk : Color.primary)
-                    .contentShape(Rectangle())
-                    .onTapGesture(perform: select)
-                    .contextMenu {
-                        PartRotationCommands(rotate: rotate)
-                        if let capacitor = part.component as? Capacitor {
-                            Button("Set Capacitance…") { editingCapacitance = capacitor }
-                        }
-                        if let resistor = part.component as? Resistor {
-                            Button("Set Resistance…") { editingResistance = resistor }
-                        }
-                        Button("Remove Part", role: .destructive) { bench.removePart(part.id) }
-                    }
-
-                ForEach(part.pins.values.sorted(by: { $0.number < $1.number })) { pin in
-                    let terminal = WorkbenchTerminal(partID: part.id, pinNumber: pin.number)
-                    pinRow(pin, terminal: terminal)
-                }
             }
         }
         .overlay(alignment: .topTrailing) {
@@ -887,14 +1484,10 @@ struct WorkbenchView: View {
                     .accessibilityLabel(warning)
             }
         }
-        .padding(4)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
         .transformAnchorPreference(key: CanvasBounds.self, value: .bounds) { bounds, anchor in
             bounds[.part(part.id)] = anchor
         }
-        .rotationEffect(.degrees(Double(bench.rotations[part.id, default: 0] * 90)))
-        .padding(12)
-        .frame(width: 270)
     }
 
     private func selectWire(_ id: Int) {
@@ -903,57 +1496,24 @@ struct WorkbenchView: View {
         canvasFocused = true
     }
 
-    private func selectPart(_ id: Int) {
-        selectedParts = [id]
+    private func selectPart(_ id: Int, extending: Bool = workbenchShiftPressed) {
+        if extending {
+            if selectedParts.remove(id) == nil { selectedParts.insert(id) }
+        } else {
+            selectedParts = [id]
+        }
         bench.selectWire(nil)
         canvasFocused = true
     }
 
     private func rotationAction(for id: Int) -> (Int) -> Void {
         { steps in
-            selectPart(id)
+            selectPart(id, extending: false)
             bench.rotatePart(id, by: steps)
         }
     }
 
-    @ViewBuilder
-    private func partHeading(_ part: WorkbenchPart) -> some View {
-        switch part.component {
-        case is WorkbenchPullUp:
-            Label(part.label, systemImage: "arrow.up")
-        default:
-            Label(part.label, systemImage: "cpu")
-        }
-    }
 
-    private func pinRow(_ pin: Pin, terminal: WorkbenchTerminal) -> some View {
-        let state = bench.readings[terminal] ?? .highImpedance
-        let selected = bench.selectedTerminal == terminal
-
-        return HStack(spacing: 6) {
-            Button {
-                bench.select(terminal)
-            } label: {
-                Image(systemName: selected ? "circle.inset.filled" : "circle")
-                    .frame(width: 20, height: 18)
-                    .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(Color.accentColor)
-            .accessibilityLabel(bench.label(for: terminal))
-            .accessibilityAddTraits(selected ? .isSelected : [])
-
-            Text("\(pin.number)")
-                .font(.caption.monospacedDigit())
-                .frame(width: 18, alignment: .trailing)
-            Text(pin.name)
-                .font(.caption)
-            Spacer()
-            Text(state.description)
-                .font(.caption2.monospaced())
-                .foregroundStyle(.secondary)
-        }
-    }
 }
 
 struct PartRotationCommands: View {

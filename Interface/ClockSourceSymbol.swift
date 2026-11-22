@@ -50,17 +50,11 @@ struct ClockSourceSymbol: View {
     let rotate: (Int) -> Void
 
     private var frequency: ClockFrequency {
-        bench.clockFrequencies[partID] ?? ClockFrequency(value: 1, unit: .hertz)
+        bench.clockFrequency(for: partID, source: source)
     }
     @State private var isRunning = false
     @State private var editingFrequency = false
-    @State private var frequencyText = ""
-    @State private var frequencyUnit: ClockFrequencyUnit = .hertz
-    @FocusState private var frequencyFocused: Bool
-
-    private var enteredFrequency: ClockFrequency? {
-        ClockFrequency.parse(frequencyText, unit: frequencyUnit)
-    }
+    static let endpoint = CGPoint(x: 80, y: 20)
 
     var body: some View {
         VStack(spacing: 4) {
@@ -70,8 +64,11 @@ struct ClockSourceSymbol: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+        .frame(width: 100, height: 60, alignment: .topLeading)
         .sheet(isPresented: $editingFrequency) {
-            frequencyEditor
+            ClockFrequencyEditor(frequency: frequency, units: ClockFrequencyUnit.allCases) {
+                bench.setClockFrequency($0, for: partID)
+            }
         }
         .onChange(of: frequency.hertz) {
             if isRunning { bench.runClock(source, hertz: frequency.hertz) }
@@ -82,24 +79,18 @@ struct ClockSourceSymbol: View {
         }
     }
 
-    private func editFrequency() {
-        frequencyText = frequency.value.formatted(
-            .number.grouping(.never).precision(.significantDigits(1...17))
-        )
-        frequencyUnit = frequency.unit
-        editingFrequency = true
-    }
-
     private var squareWaveSymbol: some View {
-        ZStack(alignment: .topLeading) {
+        let terminal = WorkbenchTerminal(partID: partID, pinNumber: source.output.number)
+        let endpoint = Self.endpoint
+        return ZStack(alignment: .topLeading) {
             Button(action: toggleClock) {
                 Path { path in
                     path.addLines([
-                        CGPoint(x: 5, y: 19), CGPoint(x: 14, y: 19),
+                        CGPoint(x: 5, y: 20), CGPoint(x: 14, y: 20),
                         CGPoint(x: 14, y: 7), CGPoint(x: 26, y: 7),
-                        CGPoint(x: 26, y: 19), CGPoint(x: 38, y: 19),
+                        CGPoint(x: 26, y: 20), CGPoint(x: 38, y: 20),
                         CGPoint(x: 38, y: 7), CGPoint(x: 50, y: 7),
-                        CGPoint(x: 50, y: 19), CGPoint(x: 57, y: 19)
+                        CGPoint(x: 50, y: 20), CGPoint(x: 57, y: 20)
                     ])
                 }
                 .stroke(isRunning ? Color.green : isSelected ? Color.schematicSelectionInk : Color.primary, lineWidth: 1.5)
@@ -113,27 +104,28 @@ struct ClockSourceSymbol: View {
             .help(isRunning ? "Pause clock" : "Run clock")
             .contextMenu {
                 PartRotationCommands(rotate: rotate)
-                Button("Set Frequency…", action: editFrequency)
+                Button("Set Frequency…") { editingFrequency = true }
                 Button(isRunning ? "Pause" : "Run", action: toggleClock)
                 Divider()
                 Button("Remove Part", role: .destructive) { bench.removePart(partID) }
             }
 
             Path { path in
-                path.move(to: CGPoint(x: 57, y: 19))
-                path.addLine(to: CGPoint(x: 76, y: 19))
+                path.move(to: CGPoint(x: 57, y: 20))
+                path.addLine(to: CGPoint(x: endpoint.x - (bench.showsOpenPinMarker(terminal) ? 2.5 : 0), y: endpoint.y))
             }
             .stroke(isSelected ? Color.schematicSelectionInk : Color.primary, lineWidth: 1.5)
             .allowsHitTesting(false)
             .accessibilityHidden(true)
 
-            outputTerminal(pinNumber: source.output.number).position(x: 76, y: 19)
+            SchematicPinButton(terminal: terminal, bench: bench).position(endpoint)
         }
-        .frame(width: 86, height: 29)
+        .frame(width: 100, height: 30)
     }
 
     private func toggleClock() {
         select()
+        guard !workbenchShiftPressed else { return }
         isRunning.toggle()
         if isRunning {
             bench.runClock(source, hertz: frequency.hertz)
@@ -142,29 +134,32 @@ struct ClockSourceSymbol: View {
         }
     }
 
-    private func outputTerminal(pinNumber: Int) -> some View {
-        let terminal = WorkbenchTerminal(partID: partID, pinNumber: pinNumber)
-        let state = bench.readings[terminal] ?? .highImpedance
-        let selected = bench.selectedTerminal == terminal
+}
 
-        return Button {
-            bench.select(terminal)
-        } label: {
-            Image(systemName: selected ? "circle.inset.filled" : "circle")
-                .font(.system(size: 8))
-                .foregroundStyle(selected ? Color.accentColor : Color.primary)
-                .frame(width: 18, height: 18)
-                .contentShape(Rectangle())
-                .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(bench.label(for: terminal))
-        .accessibilityValue(state.description)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .help(state.description)
+struct ClockFrequencyEditor: View {
+    let units: [ClockFrequencyUnit]
+    let apply: (ClockFrequency) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var frequencyText: String
+    @State private var frequencyUnit: ClockFrequencyUnit
+    @FocusState private var frequencyFocused: Bool
+
+    init(frequency: ClockFrequency, units: [ClockFrequencyUnit], apply: @escaping (ClockFrequency) -> Void) {
+        self.units = units
+        self.apply = apply
+        _frequencyText = State(initialValue: frequency.value.formatted(
+            .number.grouping(.never).precision(.significantDigits(1...17))
+        ))
+        _frequencyUnit = State(initialValue: frequency.unit)
     }
 
-    private var frequencyEditor: some View {
+    private var enteredFrequency: ClockFrequency? {
+        ClockFrequency.parse(frequencyText, unit: frequencyUnit)
+    }
+
+    var body: some View {
+
         VStack(alignment: .leading, spacing: 16) {
             Text("Clock Frequency")
                 .font(.headline)
@@ -172,7 +167,7 @@ struct ClockSourceSymbol: View {
                 TextField("Frequency", text: $frequencyText)
                     .focused($frequencyFocused)
                 Picker("Unit", selection: $frequencyUnit) {
-                    ForEach(ClockFrequencyUnit.allCases) { unit in
+                    ForEach(units) { unit in
                         Text(unit.rawValue).tag(unit)
                     }
                 }
@@ -181,12 +176,12 @@ struct ClockSourceSymbol: View {
             }
             HStack {
                 Spacer()
-                Button("Cancel") { editingFrequency = false }
+                Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Apply") {
                     guard let enteredFrequency else { return }
-                    bench.setClockFrequency(enteredFrequency, for: partID)
-                    editingFrequency = false
+                    apply(enteredFrequency)
+                    dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(enteredFrequency == nil)

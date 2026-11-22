@@ -1,6 +1,10 @@
 import AppKit
 import SwiftUI
 
+var workbenchShiftPressed: Bool {
+    (NSApp.currentEvent?.modifierFlags ?? NSEvent.modifierFlags).contains(.shift)
+}
+
 /// The canvas and all of its gestures use world coordinates beneath this transform.
 struct WorkbenchViewport {
     private(set) var scale: CGFloat = 1
@@ -8,6 +12,10 @@ struct WorkbenchViewport {
 
     func worldPoint(at point: CGPoint) -> CGPoint {
         CGPoint(x: (point.x - origin.x) / scale, y: (point.y - origin.y) / scale)
+    }
+
+    func screenPoint(at world: CGPoint) -> CGPoint {
+        CGPoint(x: origin.x + world.x * scale, y: origin.y + world.y * scale)
     }
 
     mutating func zoom(to requested: CGFloat, around point: CGPoint) {
@@ -42,12 +50,14 @@ struct WorkbenchViewport {
 struct WorkbenchNavigation: NSViewRepresentable {
     let pan: (CGFloat, CGFloat) -> Void
     let zoom: (CGFloat, CGPoint) -> Void
+    let editShortcut: (String) -> Bool
 
     func makeNSView(context: Context) -> EventView { EventView() }
 
     func updateNSView(_ view: EventView, context: Context) {
         view.pan = pan
         view.zoom = zoom
+        view.editShortcut = editShortcut
     }
 
     static func dismantleNSView(_ view: EventView, coordinator: ()) {
@@ -57,6 +67,7 @@ struct WorkbenchNavigation: NSViewRepresentable {
     final class EventView: NSView {
         var pan: ((CGFloat, CGFloat) -> Void)?
         var zoom: ((CGFloat, CGPoint) -> Void)?
+        var editShortcut: ((String) -> Bool)?
         private var monitor: Any?
         private var spaceDown = false
         private var panning = false
@@ -101,6 +112,14 @@ struct WorkbenchNavigation: NSViewRepresentable {
                     panning = false
                     return nil
                 }
+            }
+            if event.type == .keyDown, !(window.firstResponder is NSTextView) {
+                let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+                if modifiers == .command,
+                   let key = event.charactersIgnoringModifiers?.lowercased(), ["c", "v", "d"].contains(key),
+                   !event.isARepeat, editShortcut?(key) == true { return nil }
+                if modifiers.isEmpty, [51, 117].contains(event.keyCode),
+                   !event.isARepeat, editShortcut?("delete") == true { return nil }
             }
             let location = event.type == .keyDown ? window.mouseLocationOutsideOfEventStream : event.locationInWindow
             let point = convert(location, from: nil)

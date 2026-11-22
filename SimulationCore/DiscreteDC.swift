@@ -4,15 +4,16 @@ import Foundation
 /// transistor networks. The digital engine still handles clocks and gates.
 struct DiscreteDC {
     private struct Device {
-        enum Kind { case resistor(Double), diode, transistor }
+        enum Kind { case resistor(Double), diode, led, transistor }
         let component: any LogicComponent
         let kind: Kind
         let nodes: [Int]
     }
 
     static func apply(components: [any LogicComponent], nets: [Net]) -> Set<ObjectIdentifier> {
-        guard components.contains(where: { $0 is NPN2N3904 }),
-              components.contains(where: { $0 is Diode1N4148 }) else { return [] }
+        let hasLED = components.contains { $0 is LED3mm }
+        let hasLegacyNetwork = components.contains { $0 is NPN2N3904 } && components.contains { $0 is Diode1N4148 }
+        guard hasLED || hasLegacyNetwork else { return [] }
         var byPin: [ObjectIdentifier: Int] = [:]
         for (index, net) in nets.enumerated() {
             for pin in net.pins { byPin[ObjectIdentifier(pin)] = index }
@@ -24,6 +25,7 @@ struct DiscreteDC {
             case let resistor as Resistor where !resistor.isTimingElement:
                 kind = .resistor(resistor.value * resistor.unit.multiplier)
             case let diode as Diode1N4148 where !diode.isTimingElement: kind = .diode
+            case is LED3mm: kind = .led
             case is NPN2N3904: kind = .transistor
             default: continue
             }
@@ -47,9 +49,10 @@ struct DiscreteDC {
 
         var modeled: Set<ObjectIdentifier> = []
         for (_, devices) in regions {
-            guard devices.contains(where: { if case .diode = $0.kind { true } else { false } }),
-                  devices.contains(where: { if case .transistor = $0.kind { true } else { false } }),
-                  let voltages = solve(devices, nets: nets) else { continue }
+            let hasLED = devices.contains { if case .led = $0.kind { true } else { false } }
+            let hasLegacyNetwork = devices.contains { if case .diode = $0.kind { true } else { false } } &&
+                devices.contains { if case .transistor = $0.kind { true } else { false } }
+            guard hasLED || hasLegacyNetwork, let voltages = solve(devices, nets: nets) else { continue }
             for device in devices {
                 modeled.insert(ObjectIdentifier(device.component))
                 for pin in device.component.pins.values { pin.drive(.highImpedance) }
@@ -107,6 +110,9 @@ struct DiscreteDC {
                     // 1N4148 nominal forward knee and slope in the sub-mA region.
                     let diodeCurrent = max(0, (voltage(b) - voltage(a) - 0.60) / 0.05)
                     current(diodeCurrent, from: b, to: a)
+                case .led:
+                    let milliamps = max(0, (voltage(b) - voltage(a) - LED3mm.forwardVoltage) / LED3mm.dynamicResistanceKilohms)
+                    current(milliamps, from: b, to: a)
                 case .transistor:
                     let collector = device.nodes[2]
                     let baseCurrent = max(0, (voltage(b) - voltage(a) - 0.68) / 0.05)

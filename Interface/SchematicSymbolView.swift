@@ -16,12 +16,20 @@ struct SchematicSymbolView: View {
     let rotate: (Int) -> Void
     var editResistance: (() -> Void)? = nil
     var editCapacitance: (() -> Void)? = nil
+    var editFrequency: (() -> Void)? = nil
     private var capacitor: Capacitor? { part.component as? Capacitor }
 
     private var resistor: Resistor? { part.component as? Resistor }
     private var display: SevenSegmentDisplay? { part.component as? SevenSegmentDisplay }
+    private var usesMAN74AFace: Bool {
+        bench.componentAppearance == .physicalDIP && part.component is MAN74A
+    }
     private var isPinHeader: Bool { part.component is PinHeader }
-    private var isDiode: Bool { part.component is Diode1N4148 }
+    private var isDiode: Bool { part.component is Diode1N4148 || part.component is LED3mm }
+    private var isXORGate: Bool {
+        part.unitPlacement?.kind == .xor && part.unitPlacement?.isPowerUnit == false
+    }
+
     private var isDiscrete: Bool { symbol.isCircular || resistor != nil || capacitor != nil || isDiode }
 
     private var valueLabel: String {
@@ -32,7 +40,7 @@ struct SchematicSymbolView: View {
         if part.component is NE555 || part.component is AnalogSwitch || CounterChip.kind(of: part.component) != nil || part.component is CD4060 || part.component is SevenSegmentDriver || display != nil {
             return part.name
         }
-        return isDiscrete ? part.name : part.unitPlacement?.kind.rawValue ?? "4510"
+        return part.unitPlacement?.kind.rawValue ?? part.name
     }
 
     private var labelPosition: CGPoint {
@@ -42,23 +50,23 @@ struct SchematicSymbolView: View {
         if resistor != nil || capacitor != nil || symbol.isCircular {
             return CGPoint(x: bodyCenter.x + 42, y: bodyCenter.y)
         }
+        if usesMAN74AFace {
+            return CGPoint(x: bodyCenter.x, y: point(symbol.body.origin).y + bodySize.height - 23)
+        }
+        if bench.componentAppearance == .schematic && part.component is MAN74A {
+            return CGPoint(x: bodyCenter.x, y: point(symbol.body.origin).y - 13)
+        }
         if isDiode || display != nil || !symbol.polygon.isEmpty {
             return CGPoint(x: bodyCenter.x, y: point(symbol.body.origin).y + bodySize.height + 14)
         }
         return bodyCenter
     }
 
-    private let scale: CGFloat = 6
-    private var padding: CGFloat { symbol.polygon.isEmpty && !isDiode ? 18 : 28 }
+    private let scale = SchematicSymbolGeometry.scale
+    private var geometry: SchematicSymbolGeometry { SchematicSymbolGeometry(symbol: symbol, part: part) }
     private let bodyFill = Color(red: 1, green: 1, blue: 0.76)
     private let outline = Color(red: 0.65, green: 0, blue: 0)
     private let labelInk = Color(red: 0, green: 0.35, blue: 0.36)
-
-    private var bounds: CGRect {
-        symbol.terminals.reduce(symbol.body) { rect, pin in
-            rect.union(CGRect(origin: pin.position, size: .zero))
-        }
-    }
 
     private var bodySize: CGSize {
         CGSize(width: symbol.body.width * scale, height: symbol.body.height * scale)
@@ -72,18 +80,25 @@ struct SchematicSymbolView: View {
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
                 let outlinePath = symbolOutline()
-                if isSelected && !isPinHeader {
+                if isSelected && !isPinHeader && !usesMAN74AFace {
                     context.fill(outlinePath, with: .color(.schematicSelectionFill))
                     context.stroke(outlinePath, with: .color(.cyan.opacity(0.3)), lineWidth: 4)
-                } else if !isDiscrete && !isPinHeader {
+                } else if !isDiscrete && !isPinHeader && !usesMAN74AFace {
                     context.fill(outlinePath, with: .color(bodyFill))
                 }
-                if capacitor == nil && !isPinHeader {
+                if capacitor == nil && !isPinHeader && !usesMAN74AFace {
                     context.stroke(outlinePath, with: .color(outline), lineWidth: 1.2)
                 }
                 if let display {
-                    drawSevenSegmentDisplay(display, in: context, point: point) {
-                        bench.readings[WorkbenchTerminal(partID: partID, pinNumber: $0)] ?? .highImpedance
+                    if usesMAN74AFace {
+                        drawMAN74AFace(display, in: context)
+                        if isSelected {
+                            context.stroke(outlinePath, with: .color(.cyan), lineWidth: 2)
+                        }
+                    } else if bench.componentAppearance == .physicalDIP {
+                        drawSevenSegmentFace(display, in: context, point: point, state: displayReading)
+                    } else {
+                        drawSevenSegmentSchematic(display, body: symbol.body, in: context, point: point, state: displayReading)
                     }
                 }
                 for marking in symbol.filledMarkings {
@@ -98,7 +113,12 @@ struct SchematicSymbolView: View {
                     if isSelected {
                         context.stroke(path, with: .color(.cyan.opacity(0.35)), lineWidth: 4)
                     }
-                    context.stroke(path, with: .color(isDiscrete ? outline : labelInk), lineWidth: 1)
+                    if bench.illuminatedLEDs.contains(partID) {
+                        context.stroke(path, with: .color(.red.opacity(0.30)), lineWidth: 7)
+                        context.stroke(path, with: .color(.red), lineWidth: 2)
+                    } else {
+                        context.stroke(path, with: .color(isDiscrete || isXORGate ? outline : labelInk), lineWidth: 1)
+                    }
                 }
                 for pin in symbol.terminals {
                     draw(pin, in: context)
@@ -120,17 +140,29 @@ struct SchematicSymbolView: View {
                     if let editResistance {
                         Button("Set Resistance…", action: editResistance)
                     }
+                    if let editFrequency { Button("Set Frequency…", action: editFrequency) }
                     Button("Remove Part", role: .destructive) { bench.removePart(partID) }
                 }
                 .position(bodyCenter)
 
+            if isXORGate {
+                Text(valueLabel)
+                    .font(.system(size: 15, design: .monospaced))
+                    .foregroundStyle(labelInk)
+                    .position(x: bodyCenter.x + 3, y: bodyCenter.y)
+                    .allowsHitTesting(false)
+            }
+
             VStack(spacing: 1) {
                 Text(part.reference ?? "U\(partID)")
                     .fontWeight(.semibold)
-                if !isPinHeader { Text(valueLabel) }
+                if !isPinHeader && !isXORGate { Text(valueLabel) }
+                if let oscillator = part.component as? CXO_DIP8 {
+                    Text(bench.clockFrequency(for: partID, source: oscillator).label)
+                }
             }
             .font(.system(size: 10, design: .monospaced))
-            .foregroundStyle(labelInk)
+            .foregroundStyle(usesMAN74AFace ? Color(white: 0.85) : labelInk)
             .position(labelPosition)
             .allowsHitTesting(false)
 
@@ -138,8 +170,51 @@ struct SchematicSymbolView: View {
                 terminal(pin)
             }
         }
-        .frame(width: bounds.width * scale + 2 * padding + (symbol.isCircular || resistor != nil || capacitor != nil ? 85 : 0),
-               height: bounds.height * scale + 2 * padding)
+        .frame(width: geometry.size.width, height: geometry.size.height)
+    }
+
+    private func displayReading(_ pin: Int) -> LogicState {
+        bench.readings[WorkbenchTerminal(partID: partID, pinNumber: pin)] ?? .highImpedance
+    }
+
+    private func drawMAN74AFace(_ display: SevenSegmentDisplay, in context: GraphicsContext) {
+        let face = symbol.body
+        func position(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            point(CGPoint(x: face.minX + x * face.width, y: face.minY + y * face.height))
+        }
+        func color(_ pin: Int) -> Color {
+            display.isLit(pin, reading: displayReading)
+                ? Color(red: 1, green: 0.23, blue: 0.11)
+                : Color(red: 0.32, green: 0.22, blue: 0.21)
+        }
+
+        let outline = symbolOutline()
+        context.fill(outline, with: .color(Color(white: 0.20)))
+        context.stroke(outline, with: .color(Color(white: 0.10)), lineWidth: 1)
+
+        // Slanted bars follow the front-face reference in A–G order.
+        let segments: [[(CGFloat, CGFloat)]] = [
+            [(0.43, 0.29), (0.71, 0.29), (0.69, 0.34), (0.41, 0.34)],
+            [(0.73, 0.30), (0.83, 0.30), (0.76, 0.49), (0.66, 0.49)],
+            [(0.66, 0.51), (0.76, 0.51), (0.69, 0.70), (0.59, 0.70)],
+            [(0.31, 0.66), (0.58, 0.66), (0.56, 0.71), (0.29, 0.71)],
+            [(0.23, 0.51), (0.33, 0.51), (0.26, 0.70), (0.16, 0.70)],
+            [(0.30, 0.30), (0.40, 0.30), (0.33, 0.49), (0.23, 0.49)],
+            [(0.37, 0.475), (0.64, 0.475), (0.62, 0.525), (0.35, 0.525)]
+        ]
+        for (pin, corners) in zip(display.segmentNumbers, segments) {
+            let segment = Path { path in
+                path.addLines(corners.map { position($0.0, $0.1) })
+                path.closeSubpath()
+            }
+            context.fill(segment, with: .color(color(pin)))
+        }
+
+        let dot = position(0.82, 0.71)
+        let radius = bodySize.width * 0.06
+        let dotPath = Path(ellipseIn: CGRect(x: dot.x - radius, y: dot.y - radius,
+                                            width: 2 * radius, height: 2 * radius))
+        context.fill(dotPath, with: .color(color(display.segmentNumbers[7])))
     }
 
     private func symbolOutline() -> Path {
@@ -172,17 +247,22 @@ struct SchematicSymbolView: View {
     }
 
     private func terminal(_ pin: KiCadSymbol.Terminal) -> some View {
-        let endpoint = point(pin.position)
+        let endpoint = geometry.endpoint(pin)
         let inner = point(pin.bodyEnd)
         let terminal = WorkbenchTerminal(partID: partID, pinNumber: pin.id)
-        let selected = bench.selectedTerminal == terminal
-        let state = bench.readings[terminal] ?? .highImpedance
-        let labelInset: CGFloat = pin.style.hasSuffix("clock") ? 19 : 13
+
+        let schematicDisplay = display != nil && bench.componentAppearance == .schematic
+        let labelInset: CGFloat
+        if schematicDisplay && pin.inward.dx > 0 {
+            labelInset = pin.name == "DP" || pin.name == "D.P." ? 22 : 14
+        } else {
+            labelInset = usesMAN74AFace ? 10 : (pin.style.hasSuffix("clock") ? 19 : 13)
+        }
 
         return ZStack {
-            Text(isDiscrete ? "" : pin.name)
+            Text(isDiscrete ? "" : schematicDisplay && pin.name == "DP" ? "D.P." : pin.name)
                 .font(.system(size: 9, design: .monospaced))
-                .foregroundStyle(labelInk)
+                .foregroundStyle(usesMAN74AFace ? Color(white: 0.85) : labelInk)
                 .allowsHitTesting(false)
                 .position(x: inner.x + pin.inward.dx * labelInset,
                           y: inner.y + pin.inward.dy * 9)
@@ -197,29 +277,14 @@ struct SchematicSymbolView: View {
                           y: (endpoint.y + inner.y) / 2 - (pin.inward.dy == 0 ? 7 : 0))
                 .accessibilityHidden(true)
 
-            Button {
-                bench.select(terminal)
-            } label: {
-                Image(systemName: selected ? "circle.inset.filled" : "circle.fill")
-                    .font(.system(size: selected ? 12 : 8))
-                    .foregroundStyle(selected ? Color.accentColor : outline)
-                    .opacity(isPinHeader && !selected ? 0 : 1)
-                    .frame(width: 15, height: 15)
-                    .contentShape(Rectangle())
-                    .anchorPreference(key: CanvasBounds.self, value: .bounds) { [.terminal(terminal): $0] }
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(bench.label(for: terminal))
-            .accessibilityValue(state.description)
-            .accessibilityAddTraits(selected ? .isSelected : [])
-            .help("\(bench.label(for: terminal)) · \(state.description)")
-            .position(endpoint)
+            SchematicPinButton(terminal: terminal, bench: bench,
+                               spacing: schematicPinSpacing(at: endpoint, among: symbol.terminals.map(geometry.endpoint)))
+                .position(endpoint)
         }
     }
 
     private func point(_ position: CGPoint) -> CGPoint {
-        CGPoint(x: (position.x - bounds.minX) * scale + padding,
-                y: (position.y - bounds.minY) * scale + padding)
+        geometry.point(position)
     }
 
     private func draw(_ pin: KiCadSymbol.Terminal, in context: GraphicsContext) {
@@ -228,7 +293,11 @@ struct SchematicSymbolView: View {
         let radius: CGFloat = 3
         let inward = pin.inward
         var path = Path()
-        path.move(to: point(pin.position))
+        let endpoint = geometry.endpoint(pin)
+        let terminal = WorkbenchTerminal(partID: partID, pinNumber: pin.id)
+        path.addLines(schematicPinLead(from: endpoint, toward: point(pin.position),
+                                      trim: bench.showsOpenPinMarker(terminal) ? 2.5 : 0,
+                                      inward: inward))
         path.addLine(to: CGPoint(x: inner.x - (bubbles ? 2 * radius * inward.dx : 0),
                                  y: inner.y - (bubbles ? 2 * radius * inward.dy : 0)))
         if bubbles {
@@ -253,33 +322,113 @@ struct SchematicSymbolView: View {
 
 }
 
-func drawSevenSegmentDisplay(_ display: SevenSegmentDisplay, in context: GraphicsContext,
-                         point: (CGPoint) -> CGPoint, state: (Int) -> LogicState) {
-    // MAN72A uses the same segment geometry shifted right, with a left decimal point.
-    func segmentPoint(_ position: CGPoint) -> CGPoint {
-        point(CGPoint(x: position.x + (display.commonAnode ? 1.778 : 0),
-                      y: position.y - (display.commonAnode ? 0.254 : 0)))
+func drawSevenSegmentFace(_ display: SevenSegmentDisplay, in context: GraphicsContext,
+                             point: (CGPoint) -> CGPoint, state: (Int) -> LogicState) {
+    // Place the face in the free space beside the KiCad pin labels.
+    // All artwork uses symbol coordinates so imported flips and workbench zoom apply together.
+    let face = CGRect(x: -1.95, y: -12.35, width: 6.65, height: 11.4)
+    func position(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        point(CGPoint(x: face.minX + x * face.width, y: face.minY + y * face.height))
     }
-    let segments: [(CGPoint, CGPoint)] = [
-        (CGPoint(x: -0.508, y: -11.43), CGPoint(x: 1.524, y: -11.43)),
-        (CGPoint(x: 2.032, y: -10.922), CGPoint(x: 1.778, y: -8.89)),
-        (CGPoint(x: 1.778, y: -7.874), CGPoint(x: 1.524, y: -5.842)),
-        (CGPoint(x: -1.016, y: -5.334), CGPoint(x: 1.016, y: -5.334)),
-        (CGPoint(x: -1.27, y: -7.874), CGPoint(x: -1.524, y: -5.842)),
-        (CGPoint(x: -1.016, y: -10.922), CGPoint(x: -1.27, y: -8.89)),
-        (CGPoint(x: -0.762, y: -8.382), CGPoint(x: 1.27, y: -8.382))
+
+    let facePath = Path { path in
+        path.addLines([position(0, 0), position(1, 0), position(1, 1), position(0, 1)])
+        path.closeSubpath()
+    }
+    context.fill(facePath, with: .color(Color(red: 0.14, green: 0.14, blue: 0.15)))
+    context.stroke(facePath, with: .color(Color(white: 0.30)), lineWidth: 1)
+
+    let left: CGFloat = display.commonAnode ? 0.34 : 0.17
+    let right = left + 0.49
+    let upper: CGFloat = 0.17
+    let middle: CGFloat = 0.49
+    let lower: CGFloat = 0.81
+    let segments = [
+        (left, upper, right, upper),
+        (right, upper, right, middle),
+        (right, middle, right, lower),
+        (left, lower, right, lower),
+        (left, middle, left, lower),
+        (left, upper, left, middle),
+        (left, middle, right, middle)
     ]
-    func color(for number: Int) -> Color {
-        let lit = display.isLit(number, reading: state)
-        return lit ? .red : Color(red: 0.65, green: 0, blue: 0).opacity(0.16)
+
+    func color(for pin: Int) -> Color {
+        display.isLit(pin, reading: state)
+            ? Color(red: 1, green: 0.13, blue: 0.16)
+            : Color(red: 0.32, green: 0.20, blue: 0.22)
     }
-    for (number, segment) in zip(display.segmentNumbers, segments) {
-        var path = Path()
-        path.move(to: segmentPoint(segment.0))
-        path.addLine(to: segmentPoint(segment.1))
-        context.stroke(path, with: .color(color(for: number)), style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+
+    for (pin, segment) in zip(display.segmentNumbers, segments) {
+        let (x1, y1, x2, y2) = segment
+        let horizontal = y1 == y2
+        let tipX: CGFloat = horizontal ? 0.047 : 0
+        let tipY: CGFloat = horizontal ? 0 : 0.027
+        let halfWidth: CGFloat = horizontal ? 0 : 0.061
+        let halfHeight: CGFloat = horizontal ? 0.036 : 0
+        let path = Path { path in
+            path.addLines([
+                position(x1 + tipX, y1 + tipY),
+                position(x1 + 2 * tipX + halfWidth, y1 + 2 * tipY + halfHeight),
+                position(x2 - 2 * tipX + halfWidth, y2 - 2 * tipY + halfHeight),
+                position(x2 - tipX, y2 - tipY),
+                position(x2 - 2 * tipX - halfWidth, y2 - 2 * tipY - halfHeight),
+                position(x1 + 2 * tipX - halfWidth, y1 + 2 * tipY - halfHeight)
+            ])
+            path.closeSubpath()
+        }
+        context.fill(path, with: .color(color(for: pin)))
     }
-    let dot = point(display.commonAnode ? CGPoint(x: -0.762, y: -5.588) : CGPoint(x: 2.794, y: -5.334))
-    context.fill(Path(ellipseIn: CGRect(x: dot.x - 1.5, y: dot.y - 1.5, width: 3, height: 3)),
+
+    let dot = position(display.commonAnode ? 0.15 : 0.85, lower)
+    let edge = position(1, 0)
+    let origin = position(0, 0)
+    let radius = hypot(edge.x - origin.x, edge.y - origin.y) * 0.056
+    context.fill(Path(ellipseIn: CGRect(x: dot.x - radius, y: dot.y - radius,
+                                       width: 2 * radius, height: 2 * radius)),
                  with: .color(color(for: display.segmentNumbers[7])))
+}
+
+func drawSevenSegmentSchematic(_ display: SevenSegmentDisplay, body: CGRect, in context: GraphicsContext,
+                               point: (CGPoint) -> CGPoint, state: (Int) -> LogicState) {
+    let centerX = body.midX + (display.commonAnode ? 1.6 : 0.25)
+    let top = body.minY + 1.2
+    func position(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+        point(CGPoint(x: centerX + x, y: top + y))
+    }
+
+    let segments: [(start: CGPoint, end: CGPoint, label: CGPoint)] = [
+        (.init(x: -0.8, y: 0), .init(x: 1.2, y: 0), .init(x: 0.2, y: 0.8)),
+        (.init(x: 1.7, y: 0.5), .init(x: 1.4, y: 2.6), .init(x: 2.5, y: 1.5)),
+        (.init(x: 1.4, y: 3.6), .init(x: 1.1, y: 5.7), .init(x: 2.2, y: 4.6)),
+        (.init(x: -1.4, y: 6.2), .init(x: 0.6, y: 6.2), .init(x: -0.4, y: 5.4)),
+        (.init(x: -1.7, y: 3.6), .init(x: -2, y: 5.7), .init(x: -2.8, y: 4.6)),
+        (.init(x: -1.3, y: 0.5), .init(x: -1.6, y: 2.6), .init(x: -2.4, y: 1.5)),
+        (.init(x: -1, y: 3.1), .init(x: 0.9, y: 3.1), .init(x: 0, y: 2.3))
+    ]
+    let ink = Color(red: 0.52, green: 0.06, blue: 0)
+    let scale = abs(point(CGPoint(x: 1, y: 0)).x - point(.zero).x)
+    func color(for pin: Int) -> Color {
+        display.isLit(pin, reading: state) ? .red : ink
+    }
+    func label(_ text: String, at location: CGPoint) {
+        context.draw(Text(text).font(.system(size: scale * 0.75, weight: .medium, design: .monospaced))
+            .foregroundStyle(ink), at: location)
+    }
+    for (pin, segment) in zip(display.segmentNumbers, segments) {
+        let path = Path { path in
+            path.addLines([position(segment.start.x, segment.start.y), position(segment.end.x, segment.end.y)])
+        }
+        context.stroke(path, with: .color(color(for: pin)),
+                       style: StrokeStyle(lineWidth: scale * 0.48, lineCap: .round))
+        label(display.pins[pin]!.name, at: position(segment.label.x, segment.label.y))
+    }
+
+    let dotX: CGFloat = display.commonAnode ? -2.9 : 2.55
+    let dot = position(dotX, 6.2)
+    let radius = scale * 0.22
+    context.fill(Path(ellipseIn: CGRect(x: dot.x - radius, y: dot.y - radius,
+                                       width: 2 * radius, height: 2 * radius)),
+                 with: .color(color(for: display.segmentNumbers[7])))
+    label("DP", at: position(dotX + (display.commonAnode ? -0.55 : 0.95), 7.05))
 }

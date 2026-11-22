@@ -16,7 +16,7 @@ enum QuadGate: Int, CaseIterable {
 }
 
 enum QuadLogicKind {
-    case and, nand, or
+    case and, nand, or, xor
 }
 
 class QuadLogicChip: LogicComponent {
@@ -26,7 +26,7 @@ class QuadLogicChip: LogicComponent {
     init(kind: QuadLogicKind) {
         self.kind = kind
         var pinMap = [
-            7: Pin(number: 7, name: "VSS", direction: .power),
+            7: Pin(number: 7, name: kind == .xor ? "GND" : "VSS", direction: .power),
             14: Pin(number: 14, name: "VDD", direction: .power)
         ]
         for gate in QuadGate.allCases {
@@ -45,7 +45,13 @@ class QuadLogicChip: LogicComponent {
             let b = pins[inputB]!.state
             let result: LogicState
 
-            if kind == .or {
+            if kind == .xor {
+                result = if (a == .high || a == .low) && (b == .high || b == .low) {
+                    a == b ? .low : .high
+                } else {
+                    .undefined
+                }
+            } else if kind == .or {
                 if a == .high || b == .high {
                     result = .high
                 } else if a == .low && b == .low {
