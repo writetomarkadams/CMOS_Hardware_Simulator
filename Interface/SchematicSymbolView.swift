@@ -408,9 +408,7 @@ func drawSevenSegmentSchematic(_ display: SevenSegmentDisplay, body: CGRect, in 
     ]
     let ink = Color(red: 0.52, green: 0.06, blue: 0)
     let scale = abs(point(CGPoint(x: 1, y: 0)).x - point(.zero).x)
-    func color(for pin: Int) -> Color {
-        display.isLit(pin, reading: state) ? .red : ink
-    }
+    let outlineWidth = scale * 0.085
     func label(_ text: String, at location: CGPoint) {
         context.draw(Text(text).font(.system(size: scale * 0.75, weight: .medium, design: .monospaced))
             .foregroundStyle(ink), at: location)
@@ -419,16 +417,24 @@ func drawSevenSegmentSchematic(_ display: SevenSegmentDisplay, body: CGRect, in 
         let path = Path { path in
             path.addLines([position(segment.start.x, segment.start.y), position(segment.end.x, segment.end.y)])
         }
-        context.stroke(path, with: .color(color(for: pin)),
-                       style: StrokeStyle(lineWidth: scale * 0.48, lineCap: .round))
+        let style = StrokeStyle(lineWidth: scale * 0.48, lineCap: .round)
+        if display.isLit(pin, reading: state) {
+            context.stroke(path, with: .color(.red), style: style)
+        } else {
+            context.stroke(path.strokedPath(style), with: .color(ink), lineWidth: outlineWidth)
+        }
         label(display.pins[pin]!.name, at: position(segment.label.x, segment.label.y))
     }
 
     let dotX: CGFloat = display.commonAnode ? -2.9 : 2.55
     let dot = position(dotX, 6.2)
     let radius = scale * 0.22
-    context.fill(Path(ellipseIn: CGRect(x: dot.x - radius, y: dot.y - radius,
-                                       width: 2 * radius, height: 2 * radius)),
-                 with: .color(color(for: display.segmentNumbers[7])))
+    let dotPath = Path(ellipseIn: CGRect(x: dot.x - radius, y: dot.y - radius,
+                                          width: 2 * radius, height: 2 * radius))
+    if display.isLit(display.segmentNumbers[7], reading: state) {
+        context.fill(dotPath, with: .color(.red))
+    } else {
+        context.stroke(dotPath, with: .color(ink), lineWidth: outlineWidth)
+    }
     label("DP", at: position(dotX + (display.commonAnode ? -0.55 : 0.95), 7.05))
 }
