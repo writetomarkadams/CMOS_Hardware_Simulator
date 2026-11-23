@@ -21,6 +21,25 @@ struct WorkbenchViewportTests {
         #expect(viewport.worldPoint(at: cursor) == originalPoint)
     }
 
+    @Test func canvasIncludesNegativeWorldCoordinatesAfterPanAndZoom() {
+        var viewport = WorkbenchViewport()
+        let size = CGSize(width: 960, height: 700)
+        viewport.pan(x: 500, y: 300)
+        viewport.zoom(to: 1.5, around: CGPoint(x: 480, y: 350))
+        let frame = viewport.canvasFrame(in: size, extent: CGSize(width: 1400, height: 900))
+        let pin = CGPoint(x: -200, y: -80)
+        let bend = CGPoint(x: -180, y: -50)
+
+        #expect(frame.contains(pin))
+        #expect(frame.contains(bend))
+        let localPin = CGPoint(x: pin.x - frame.minX, y: pin.y - frame.minY)
+        let canvasOrigin = viewport.screenPoint(at: frame.origin)
+        let screenPin = CGPoint(x: canvasOrigin.x + localPin.x * viewport.scale,
+                                y: canvasOrigin.y + localPin.y * viewport.scale)
+        #expect(screenPin == viewport.screenPoint(at: pin))
+        #expect(WorkbenchWire.snap(viewport.worldPoint(at: viewport.screenPoint(at: bend))) == bend)
+    }
+
     @Test func fitCentersOffsetBoundsWithPadding() {
         var viewport = WorkbenchViewport()
         let bounds = CGRect(x: -80, y: 950, width: 400, height: 200)

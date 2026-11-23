@@ -724,11 +724,17 @@ final class Workbench {
     func copyParts(_ ids: Set<Int>) throws -> WorkbenchArchive {
         var internalWireIDs: Set<Int> = []
         for group in junctionGroups() {
-            let selected = group.endpoints.filter { !$0.isJunction && ids.contains($0.partID) }
-            internalWireIDs.formUnion(internalWires(in: group, joining: selected).map(\.id))
+            let attached = group.endpoints.filter { !$0.isJunction }
+            let selected = attached.filter { ids.contains($0.partID) }
+            guard !selected.isEmpty else { continue }
+            // Only trim junction branches when cutting connections at the selection boundary.
+            let routes = selected == attached ? group.wires : internalWires(in: group, joining: selected)
+            internalWireIDs.formUnion(routes.map(\.id))
         }
         let copiedWires = wires.filter {
-            internalWireIDs.contains($0.id) || (ids.contains($0.first.partID) && ids.contains($0.second.partID))
+            internalWireIDs.contains($0.id)
+                || (!$0.first.isJunction && !$0.second.isJunction
+                    && ids.contains($0.first.partID) && ids.contains($0.second.partID))
         }
         let usedJunctions = Set(copiedWires.flatMap { [$0.first, $0.second] }
             .filter(\.isJunction).map(\.pinNumber))

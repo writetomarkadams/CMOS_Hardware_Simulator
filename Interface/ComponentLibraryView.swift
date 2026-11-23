@@ -22,7 +22,7 @@ struct ComponentLibraryView: View {
         case analogSwitch(AnalogSwitchKind)
         case capacitor(CapacitorKind)
         case pinHeader(PinHeaderKind)
-        case cd4070, timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, oscillatorDIP8, led, led3mm, pullUp
+        case cd4011, cd40106, cd4027, cd4070, cd4081, cd4518, timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, oscillatorDIP8, led, led3mm, pullUp
 
         var id: Self { self }
 
@@ -31,7 +31,12 @@ struct ComponentLibraryView: View {
             case .chip(.xor): "CD4070 XOR Gate"
             case .chip(let kind): kind.partName
             case .chipPower(let kind, _, let reference): "\(kind.partName) \(reference)"
+            case .cd4011: "CD4011"
+            case .cd40106: "CD40106"
+            case .cd4027: "CD4027 Package"
+            case .cd4518: "CD4518 Package"
             case .cd4070: "CD4070"
+            case .cd4081: "CD4081 Package"
             case .timer555: "NE555"
             case .counter: "CD4510"
             case .additionalCounter(let kind): kind.rawValue
@@ -61,7 +66,12 @@ struct ComponentLibraryView: View {
             case .chip(.xor): "Individually placed XOR gate"
             case .chip(let kind): kind.unitName
             case .chipPower: "Shared Power Unit · VDD / VSS"
+            case .cd4011: "Four NAND gates and power · Switchable DIP-14"
+            case .cd40106: "Six Schmitt-trigger inverters and power · Switchable DIP-14"
+            case .cd4027: "Two J-K flip-flops and power · Switchable DIP-16"
+            case .cd4518: "Two BCD counters and power · Switchable DIP-16"
             case .cd4070: "Four XOR gates and power · Switchable DIP-14"
+            case .cd4081: "Four AND gates and power · Switchable DIP-14"
             case .timer555: "Timer · Digital inputs or standard RC astable/monostable"
             case .counter: "BCD Up/Down Counter"
             case .additionalCounter(let kind): kind.detail
@@ -89,7 +99,7 @@ struct ComponentLibraryView: View {
 
         var icon: String {
             switch self {
-            case .chip, .chipPower, .cd4070, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
+            case .chip, .chipPower, .cd4011, .cd40106, .cd4027, .cd4070, .cd4081, .cd4518, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
             case .transistor: "circle.branch"
             case .pinHeader: "circle.grid.2x2"
             case .capacitor, .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
@@ -112,7 +122,7 @@ struct ComponentLibraryView: View {
     }
 
     private var chips: [Entry] {
-        (MultiUnitChip.allCases.map(Entry.chip) + [.cd4070, .timer555, .counter, .rippleCounter]
+        (MultiUnitChip.allCases.map(Entry.chip) + [.cd4011, .cd40106, .cd4027, .cd4070, .cd4081, .cd4518, .timer555, .counter, .rippleCounter]
             + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
             + CounterChip.allCases.map(Entry.additionalCounter)
             + AnalogSwitchKind.allCases.map(Entry.analogSwitch)
@@ -224,8 +234,18 @@ struct ComponentLibraryView: View {
             bench.add(kind.rawValue, component: AnalogSwitch(kind))
         case .additionalCounter(let kind):
             bench.add(kind.rawValue, component: kind.makeComponent())
+        case .cd4011:
+            bench.add("CD4011", component: CD4011())
+        case .cd40106:
+            bench.add("CD40106", component: CD40106())
+        case .cd4518:
+            bench.add("CD4518", component: DualCounter(.bcd))
+        case .cd4027:
+            bench.add("CD4027", component: CD4027())
         case .cd4070:
             bench.add("CD4070", component: CD4070())
+        case .cd4081:
+            bench.add("CD4081", component: CD4081())
         case .timer555:
             bench.add("NE555", component: NE555())
         case .counter:

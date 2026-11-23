@@ -13,18 +13,24 @@ struct DIPPackage {
     let endpoints: [Int: CGPoint]
     let body: CGRect
     let usesCD4070Artwork: Bool
-    let isCD4511: Bool
+    let analogSwitchKind: AnalogSwitchKind?
+    let displayDriverKind: SevenSegmentDriverKind?
+    let isCD4518: Bool
 
     init?(part: WorkbenchPart) {
         // An imported drawing or an individual schematic unit does not own a
         // complete package at this placement. Keep its existing geometry.
         guard part.importedSymbol == nil, part.unitPlacement == nil else { return nil }
-        isCD4511 = (part.component as? SevenSegmentDriver)?.kind == .cd4511
+        analogSwitchKind = (part.component as? AnalogSwitch)?.kind
+        displayDriverKind = (part.component as? SevenSegmentDriver)?.kind
+        isCD4518 = (part.component as? DualCounter)?.kind == .bcd
         let count: Int
         switch part.component {
-        case is CD4070: count = 14
-        case is CD4510: count = 16
-        case is SevenSegmentDriver where isCD4511: count = 16
+        case is CD4011, is CD4070, is CD4081, is CD40106: count = 14
+        case is CD4017, is CD4026, is CD4027, is CD4029, is CD4060, is CD4510, is CD4516: count = 16
+        case is DualCounter where isCD4518: count = 16
+        case is AnalogSwitch: count = 16
+        case is SevenSegmentDriver: count = 16
         case is NE555: count = 8
         default: return nil
         }
@@ -34,7 +40,8 @@ struct DIPPackage {
 
         let rows = count / 2
         let step = WorkbenchWire.gridSpacing
-        usesCD4070Artwork = part.component is CD4070 || part.component is CD4510 || isCD4511
+        usesCD4070Artwork = part.component is CD4011 || part.component is CD4070 || part.component is CD4081
+            || part.component is CD40106 || count == 16
         size = CGSize(width: 18 * step, height: CGFloat(2 * rows + 6) * step)
         let rightEndpoint = size.width - 2 * step
         body = CGRect(x: 40, y: 16, width: 100, height: size.height - 24)
@@ -87,7 +94,12 @@ struct DIPPackageView: View {
         let body = package.body
         let usesCD4070Artwork = package.usesCD4070Artwork
         let isCD4510 = part.component is CD4510
-        let usesDIP16Artwork = isCD4510 || package.isCD4511
+        let isCD4516 = part.component is CD4516
+        let isNE555 = part.component is NE555
+        let usesCompactTabs = isCD4516 || package.isCD4518 || package.displayDriverKind == .cd4543 || isNE555
+        let isCD4029 = part.component is CD4029
+        let isCD4017 = part.component is CD4017
+        let usesDIP16Artwork = package.pins.count == 16
         let outline = Path { path in
             let radius: CGFloat = usesCD4070Artwork ? 8 : 5
             let notch: CGFloat = usesCD4070Artwork ? 10 : 8
@@ -120,16 +132,25 @@ struct DIPPackageView: View {
                        style: StrokeStyle(lineWidth: usesCD4070Artwork ? 3.5 : 3, lineJoin: .round))
         context.fill(Path(ellipseIn: CGRect(x: body.minX + (usesCD4070Artwork ? 9 : 5), y: body.minY + (usesCD4070Artwork ? 8 : 5), width: 8, height: 8)),
                      with: .color(.black))
-        let marking = package.isCD4511 ? SevenSegmentDriverKind.cd4511.rawValue
-                    : part.component is CD4070 ? "CD4070" : isCD4510 ? "CD4510" : part.name
-        context.draw(Text(marking).font(.system(size: isCD4510 ? 12 : 11, weight: .bold)).foregroundStyle(Color.black),
+        let marking = package.analogSwitchKind?.rawValue ?? package.displayDriverKind?.rawValue
+                    ?? (part.component is CD4011 ? "CD4011"
+                    : part.component is CD4070 ? "CD4070" : part.component is CD40106 ? "CD40106"
+                    : part.component is CD4026 ? "CD4026"
+                    : part.component is CD4027 ? "CD4027"
+                    : part.component is CD4060 ? "CD4060"
+                    : part.component is CD4081 ? "CD4081"
+                    : isCD4029 ? "CD4029"
+                    : package.isCD4518 ? DualCounterKind.bcd.rawValue
+                    : isNE555 ? "NE555"
+                    : isCD4017 ? "CD4017" : isCD4510 ? "CD4510" : isCD4516 ? "CD4516" : part.name)
+        context.draw(Text(marking).font(.system(size: isCD4510 || usesCompactTabs ? 12 : 11, weight: .bold)).foregroundStyle(Color.black),
                      at: CGPoint(x: body.midX, y: body.minY + (usesCD4070Artwork ? 21 : 19)))
 
         for pin in package.pins {
             let point = package.endpoints[pin.number]!
             let left = package.isLeft(pin.number)
             let edge = left ? body.minX : body.maxX
-            let tabHeight: CGFloat = usesDIP16Artwork ? 16 : 15
+            let tabHeight: CGFloat = usesCompactTabs ? 12 : (usesDIP16Artwork ? 16 : 15)
             let tab = CGRect(x: left ? point.x : edge, y: point.y - tabHeight / 2,
                              width: abs(edge - point.x), height: tabHeight)
             let colour: Color = switch pin.direction {
@@ -148,13 +169,13 @@ struct DIPPackageView: View {
                 }
                 context.stroke(lead, with: .color(.black), style: StrokeStyle(lineWidth: 1.8, lineCap: .round))
             }
-            context.draw(Text(String(pin.number)).font(.system(size: 11, weight: .bold)).foregroundStyle(Color.black),
+            context.draw(Text(String(pin.number)).font(.system(size: usesCompactTabs ? 9 : 11, weight: .bold)).foregroundStyle(Color.black),
                          at: CGPoint(x: tab.midX, y: point.y))
             let labelPoint = CGPoint(x: edge + (left ? 9 : -9), y: point.y)
             let label = context.resolve(pinLabel(pin).foregroundStyle(Color.black))
             context.draw(label, at: labelPoint, anchor: left ? .leading : .trailing)
-            let hasOverbar = (isCD4510 && [5, 7].contains(pin.number))
-                || (package.isCD4511 && [3, 4].contains(pin.number))
+            let hasOverbar = ((isCD4510 || isCD4516 || isCD4029) && [5, 7].contains(pin.number))
+                || (package.displayDriverKind == .cd4511 && [3, 4].contains(pin.number))
             if hasOverbar {
                 let width = label.measure(in: package.size).width
                 let bar = Path { path in
@@ -168,6 +189,72 @@ struct DIPPackageView: View {
 
     private func pinLabel(_ pin: Pin) -> Text {
         let font = Font.system(size: 10, weight: .bold)
+        if part.component is NE555 {
+            switch pin.number {
+            case 5: return Text("CV").font(font)
+            case 6: return Text("THRESH").font(font)
+            default: return Text(pin.name).font(font)
+            }
+        }
+        if let kind = package.analogSwitchKind {
+            let name = kind == .cd4051 && pin.direction == .bidirectional && pin.number != 3
+                ? "CH" + pin.name : pin.name
+            return Text(name).font(font)
+        }
+        if part.component is CD4027, pin.direction != .power {
+            // The datasheet numbers the low-pin bank as channel 2.
+            return subscriptedLabel(pin.name, suffix: package.isLeft(pin.number) ? "2" : "1", font: font)
+        }
+        if part.component is CD4017, pin.number == 13 {
+            return Text("CLK INH").font(font)
+        }
+        if part.component is CD4026 {
+            switch pin.number {
+            case 2: return Text("CLK INH").font(font)
+            case 3: return Text("DE IN").font(font)
+            case 4: return Text("DE OUT").font(font)
+            case 14: return Text("c UNG.").font(font)
+            default: return Text(pin.name).font(font)
+            }
+        }
+        if part.component is CD4060 {
+            switch pin.number {
+            case 9: return subscriptedLabel("C", suffix: "EXT", font: font)
+            case 10: return subscriptedLabel("R", suffix: "EXT", font: font)
+            default: break
+            }
+        }
+        if part.component is CD4029 {
+            switch pin.number {
+            case 3, 4, 12, 13:
+                return subscriptedLabel("JAM", suffix: String(pin.name.suffix(1)), font: font)
+            case 5: return subscriptedLabel("C", suffix: "IN", font: font)
+            case 7: return subscriptedLabel("C", suffix: "OUT", font: font)
+            case 9: return Text("B/D").font(font)
+            case 10: return Text("U/D").font(font)
+            default: break
+            }
+        }
+        if part.component is CD40106, pin.number == 7 {
+            return Text("GND").font(font)
+        }
+        if package.isCD4518 {
+            switch pin.number {
+            case 2: return Text("EN A").font(font)
+            case 7: return Text("RST A").font(font)
+            case 10: return Text("EN B").font(font)
+            case 15: return Text("RST B").font(font)
+            case 3...6: return Text(pin.name + "A").font(font)
+            case 11...14: return Text(pin.name + "B").font(font)
+            default: return Text(pin.name).font(font)
+            }
+        }
+        if part.component is CD4516 {
+            // The datasheet labels preset and output bits starting at 1.
+            let names = ["PE", "Q4", "P4", "P1", "CI", "Q1", "CO", "VSS",
+                         "RST", "U/D", "Q2", "P2", "P3", "Q3", "CLK", "VDD"]
+            return Text(names[pin.number - 1]).font(font)
+        }
         if part.component is CD4510 {
             switch pin.number {
             case 1: return Text("PRESET").font(font)
@@ -179,7 +266,10 @@ struct DIPPackageView: View {
             default: return Text(pin.name).font(font)
             }
         }
-        if package.isCD4511, pin.number == 3 || pin.number == 4 {
+        if package.displayDriverKind == .cd4543, pin.number == 6 {
+            return Text("PHASE").font(font)
+        }
+        if package.displayDriverKind == .cd4511, pin.number == 3 || pin.number == 4 {
             return Text(String(pin.name.prefix(while: { $0 != " " }))).font(font)
         }
         guard package.usesCD4070Artwork, pin.name.last?.isNumber == true else { return Text(pin.name).font(font) }

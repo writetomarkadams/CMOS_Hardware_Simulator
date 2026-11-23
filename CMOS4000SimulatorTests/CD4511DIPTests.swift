@@ -5,18 +5,21 @@ import Testing
 
 @MainActor
 struct CD4511DIPTests {
-    @Test func pinoutAndGrid() throws {
+    @Test(arguments: SevenSegmentDriverKind.allCases)
+    func pinoutAndGrid(kind: SevenSegmentDriverKind) throws {
         let bench = Workbench(timeSource: { 0 })
-        let decoder = SevenSegmentDriver(.cd4511)
-        bench.add("CD4511", component: decoder)
-        bench.add("CD4543", component: SevenSegmentDriver(.cd4543))
+        let decoder = SevenSegmentDriver(kind)
+        bench.add(kind.rawValue, component: decoder)
         let part = try #require(bench.parts.first)
         let dip = try #require(DIPPackage(part: part))
-        #expect(DIPPackage(part: bench.parts[1]) == nil)
-        #expect(dip.pins.map(\.name) == [
+        let pinNames = kind == .cd4511 ? [
             "B", "C", "LT (active low)", "BI (active low)", "LE", "D", "A", "VSS",
             "e", "d", "c", "b", "a", "g", "f", "VDD"
-        ])
+        ] : [
+            "LD", "C", "B", "D", "A", "PH", "BI", "VSS",
+            "a", "b", "c", "d", "e", "g", "f", "VDD"
+        ]
+        #expect(dip.pins.map(\.name) == pinNames)
         #expect(dip.pins.filter { $0.direction == .output }.map(\.number) == Array(9...15))
         #expect(dip.pins.filter { $0.direction == .power }.map(\.number) == [8, 16])
         for pin in dip.pins {
@@ -25,7 +28,7 @@ struct CD4511DIPTests {
         for number in 1...8 {
             let left = try #require(dip.endpoints[number])
             let right = try #require(dip.endpoints[17 - number])
-            #expect(left.x < dip.body.minX && right.x > dip.body.maxX)
+            #expect(left.x == 20 && right.x == 160)
             #expect(left.y == right.y && left.y == CGFloat(30 + 20 * number))
         }
         for turns in 0...3 {

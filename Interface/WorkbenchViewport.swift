@@ -18,6 +18,17 @@ struct WorkbenchViewport {
         CGPoint(x: origin.x + world.x * scale, y: origin.y + world.y * scale)
     }
 
+    func canvasFrame(in size: CGSize, extent: CGSize) -> CGRect {
+        // Canvas drawing and SwiftUI hit testing both need positive local coordinates,
+        // including when the visible world extends left of or above zero.
+        let topLeft = worldPoint(at: .zero)
+        let bottomRight = worldPoint(at: CGPoint(x: size.width, y: size.height))
+        let x = min(0, topLeft.x - 24)
+        let y = min(0, topLeft.y - 24)
+        return CGRect(x: x, y: y, width: max(extent.width, bottomRight.x) - x,
+                      height: max(extent.height, bottomRight.y) - y)
+    }
+
     mutating func zoom(to requested: CGFloat, around point: CGPoint) {
         let clamped = min(4, max(0.25, requested))
         guard scale != clamped else { return }

@@ -37,8 +37,8 @@ struct SchematicSymbolGeometry {
     }
 }
 
-/// One schematic placement with five symbols sharing the package's terminal IDs.
-struct CD4070SchematicLayout {
+/// One schematic placement with multiple symbols sharing the package's terminal IDs.
+struct MultiUnitSchematicLayout {
     struct Unit: Identifiable {
         let part: WorkbenchPart
         let symbol: KiCadSymbol
@@ -51,21 +51,26 @@ struct CD4070SchematicLayout {
     let size: CGSize
     let pins: [Int: CGPoint]
 
-    init(part: WorkbenchPart) {
-        let kind = MultiUnitChip.xor
-        let symbols = KiCadSymbol.chipUnits[kind]!
-        let gateSize = SchematicSymbolGeometry(symbol: symbols[1]!, part: part).size
-        let powerSize = SchematicSymbolGeometry(symbol: symbols[kind.powerUnit.id]!, part: part).size
-        size = CGSize(width: 2 * gateSize.width, height: 2 * gateSize.height + powerSize.height)
-        units = kind.allUnits.enumerated().map { index, unit in
+    init(part: WorkbenchPart, kind: MultiUnitChip) {
+        let unitParts = kind.allUnits.map { unit in
             let placement = ChipUnitPlacement(kind: kind, packageID: part.chipNumber ?? part.id, unit: unit)
             let unitPart = WorkbenchPart(id: part.id, name: part.name, component: part.component,
                                          unitPlacement: placement, chipNumber: part.chipNumber,
                                          designation: part.referenceBase)
-            let origin = placement.isPowerUnit
-                ? CGPoint(x: gateSize.width - powerSize.width / 2, y: 2 * gateSize.height)
-                : CGPoint(x: CGFloat(index % 2) * gateSize.width, y: CGFloat(index / 2) * gateSize.height)
-            return Unit(part: unitPart, symbol: symbols[unit.id]!, origin: origin)
+            let symbol = unitPart.librarySymbol!
+            return (part: unitPart, symbol: symbol, size: SchematicSymbolGeometry(symbol: symbol, part: unitPart).size)
+        }
+        let gateSizes = unitParts.prefix(kind.units.count).map(\.size)
+        let gateWidth = gateSizes.map(\.width).max()!
+        let gateHeight = gateSizes.map(\.height).max()!
+        let powerSize = unitParts.last!.size
+        let powerY = CGFloat((kind.units.count + 1) / 2) * gateHeight
+        size = CGSize(width: 2 * gateWidth, height: powerY + powerSize.height)
+        units = unitParts.enumerated().map { index, unit in
+            let origin = index == kind.units.count
+                ? CGPoint(x: gateWidth - powerSize.width / 2, y: powerY)
+                : CGPoint(x: CGFloat(index % 2) * gateWidth, y: CGFloat(index / 2) * gateHeight)
+            return Unit(part: unit.part, symbol: unit.symbol, origin: origin)
         }
         pins = Dictionary(uniqueKeysWithValues: units.flatMap { unit in
             let geometry = SchematicSymbolGeometry(symbol: unit.symbol, part: unit.part)
@@ -81,17 +86,31 @@ struct SchematicPartGeometry {
     let size: CGSize
     let pins: [Int: CGPoint]
 
-    let xorLayout: CD4070SchematicLayout?
+    let packageLayout: MultiUnitSchematicLayout?
 
     private let originHeight: CGFloat
 
     init(part: WorkbenchPart, turns: Int, appearance: ComponentAppearance = .schematic) {
         // Keep the original placement pivot for existing CD4070 circuits and DIP artwork.
-        let wholeXOR = part.component is CD4070 && part.unitPlacement == nil && part.importedSymbol == nil
-        let packageOriginHeight = wholeXOR
+        let packageKind: MultiUnitChip?
+        switch part.component {
+        case is CD4011: packageKind = .nand
+        case is CD4027: packageKind = .jk
+        case let counter as DualCounter where counter.kind == .bcd: packageKind = .dualBCD
+        case is CD4070: packageKind = .xor
+        case is CD4081: packageKind = .and
+        case is CD40106: packageKind = .inverter
+        default: packageKind = nil
+        }
+        let wholePackage = part.unitPlacement == nil && part.importedSymbol == nil ? packageKind : nil
+        let packageOriginHeight = wholePackage == .xor
             ? part.librarySymbol.map { SchematicSymbolGeometry(symbol: $0, part: part).size.height }
             : nil
-        xorLayout = wholeXOR && appearance == .schematic ? CD4070SchematicLayout(part: part) : nil
+        if appearance == .schematic, let wholePackage {
+            packageLayout = MultiUnitSchematicLayout(part: part, kind: wholePackage)
+        } else {
+            packageLayout = nil
+        }
         if appearance == .physicalDIP, let package = DIPPackage(part: part) {
             size = package.size
             pins = package.endpoints
@@ -107,9 +126,9 @@ struct SchematicPartGeometry {
             }
             return
         }
-        if let xorLayout {
-            size = xorLayout.size
-            pins = xorLayout.pins
+        if let packageLayout {
+            size = packageLayout.size
+            pins = packageLayout.pins
             originHeight = packageOriginHeight ?? size.height
             return
         }

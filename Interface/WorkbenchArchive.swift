@@ -3,7 +3,7 @@ import UniformTypeIdentifiers
 
 struct WorkbenchArchive: Codable, FileDocument {
     private enum Component: Codable {
-        case oscillatorDIP8, led3mm, cd4070
+        case oscillatorDIP8, led3mm, cd4070, cd40106, cd4011, cd4027, cd4081, cd4518
         case unit(MultiUnitChip, package: Int, unit: Int)
         case timer555, counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
         case driver(SevenSegmentDriverKind)
@@ -27,7 +27,12 @@ struct WorkbenchArchive: Codable, FileDocument {
             switch part.component {
             case let header as PinHeader: self = .pinHeader(header.kind)
             case let device as AnalogSwitch: self = .analogSwitch(device.kind)
+            case is CD4011: self = .cd4011
+            case is CD40106: self = .cd40106
+            case is CD4027: self = .cd4027
+            case let counter as DualCounter where counter.kind == .bcd: self = .cd4518
             case is CD4070: self = .cd4070
+            case is CD4081: self = .cd4081
             case is NE555: self = .timer555
             case is CD4510: self = .counter
             case is CD4060: self = .divider
@@ -163,7 +168,12 @@ struct WorkbenchArchive: Codable, FileDocument {
             case .additionalCounter(let kind): component = kind.makeComponent()
             case .pinHeader(let kind): component = PinHeader(kind)
             case .analogSwitch(let kind): component = AnalogSwitch(kind)
+            case .cd4011: component = CD4011()
+            case .cd40106: component = CD40106()
+            case .cd4027: component = CD4027()
+            case .cd4518: component = DualCounter(.bcd)
             case .cd4070: component = CD4070()
+            case .cd4081: component = CD4081()
             case .timer555: component = NE555()
             case .counter: component = CD4510()
             case .divider: component = CD4060()

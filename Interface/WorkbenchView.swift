@@ -176,23 +176,24 @@ struct WorkbenchView: View {
 
     private var workbenchArea: some View {
         GeometryReader { viewport in
-            let visibleCorner = camera.worldPoint(at: CGPoint(x: viewport.size.width, y: viewport.size.height))
-            let extent = canvasExtent
+            let frame = camera.canvasFrame(in: viewport.size, extent: canvasExtent)
+            let worldOrigin = frame.origin
+            let screenOrigin = camera.screenPoint(at: worldOrigin)
             let pinLocations = displayedPinLocations()
             let movement = dragCancelled ? nil : drag
             canvasBackground
                 .overlay(alignment: .topLeading) {
-                    canvas
-                        .frame(width: max(visibleCorner.x, extent.width),
-                               height: max(visibleCorner.y, extent.height), alignment: .topLeading)
+                    canvas(worldOrigin: worldOrigin)
+                        .frame(width: frame.width, height: frame.height, alignment: .topLeading)
                         .backgroundPreferenceValue(CanvasBounds.self) { anchors in
-                            wireLayer(anchors: anchors, pinLocations: pinLocations, movement: movement)
+                            wireLayer(anchors: anchors, pinLocations: pinLocations, movement: movement,
+                                      worldOrigin: worldOrigin)
                         }
-                        .overlay { pinMarkers(at: pinLocations) }
+                        .overlay { pinMarkers(at: pinLocations, worldOrigin: worldOrigin) }
                         .environment(\.schematicZoom, camera.scale)
                         .coordinateSpace(name: canvasSpace)
                         .scaleEffect(camera.scale, anchor: .topLeading)
-                        .offset(x: camera.origin.x, y: camera.origin.y)
+                        .offset(x: screenOrigin.x, y: screenOrigin.y)
                         .allowsHitTesting(placement == nil)
                 }
                 .overlay {
@@ -247,7 +248,7 @@ struct WorkbenchView: View {
         }
     }
 
-    private var canvas: some View {
+    private func canvas(worldOrigin: CGPoint) -> some View {
         ZStack(alignment: .topLeading) {
             ForEach(bench.parts) { part in
                 let turns = bench.rotations[part.id, default: 0]
@@ -259,7 +260,8 @@ struct WorkbenchView: View {
                     .id(PartIdentity(id: part.id, component: ObjectIdentifier(part.component)))
                     .simultaneousGesture(partDrag(part.id))
                     .rotationEffect(.degrees(Double(turns * 90)))
-                    .offset(x: center.x - geometry.size.width / 2, y: center.y - geometry.size.height / 2)
+                    .offset(x: center.x - geometry.size.width / 2 - worldOrigin.x,
+                            y: center.y - geometry.size.height / 2 - worldOrigin.y)
                     .zIndex(drag?.parts.contains(part.id) == true ? 1 : 0)
             }
         }
@@ -943,11 +945,13 @@ struct WorkbenchView: View {
         }
     }
 
-    private func pinMarkers(at locations: [WorkbenchTerminal: CGPoint]) -> some View {
+    private func pinMarkers(at locations: [WorkbenchTerminal: CGPoint], worldOrigin: CGPoint) -> some View {
         let explicitNoConnects = Set(bench.parts.flatMap { part in
             (part.importedSymbol?.noConnectPins ?? []).map { WorkbenchTerminal(partID: part.id, pinNumber: $0) }
         })
         return Canvas { context, _ in
+            var context = context
+            context.translateBy(x: -worldOrigin.x, y: -worldOrigin.y)
             for (terminal, point) in locations {
                 if bench.showsOpenPinMarker(terminal, explicitNoConnect: explicitNoConnects.contains(terminal)) {
                     let ring = CGRect(x: point.x - 2.5, y: point.y - 2.5, width: 5, height: 5)
@@ -979,7 +983,7 @@ struct WorkbenchView: View {
     }
 
     private func wireLayer(anchors: [CanvasItem: Anchor<CGRect>], pinLocations: [WorkbenchTerminal: CGPoint],
-                           movement: Workbench.Movement?) -> some View {
+                           movement: Workbench.Movement?, worldOrigin: CGPoint) -> some View {
         GeometryReader { geometry in
             let junctions = displayedJunctions(movement: movement)
             let location: (WorkbenchTerminal) -> CGPoint? = { endpoint in
@@ -998,7 +1002,7 @@ struct WorkbenchView: View {
 
             let partBounds = anchors.compactMap { key, anchor -> (Int, CGRect)? in
                 guard case .part(let id) = key else { return nil }
-                return (id, geometry[anchor])
+                return (id, geometry[anchor].offsetBy(dx: worldOrigin.x, dy: worldOrigin.y))
             }
 
             let bounds = measuredBounds(parts: partBounds.map(\.1),
@@ -1006,6 +1010,8 @@ struct WorkbenchView: View {
 
             ZStack {
                 Canvas { context, _ in
+                    var context = context
+                    context.translateBy(x: -worldOrigin.x, y: -worldOrigin.y)
                     for route in routes {
                         let selected = route.wire.id == bench.selectedWireID
                         if selected {
@@ -1047,7 +1053,7 @@ struct WorkbenchView: View {
                         if let hovered = bench.hoveredTerminal, let endpoint = location(hovered) {
                             bends.append(endpoint)
                         } else if let pointerLocation {
-                            bends.append(snap(canvasPoint(at: pointerLocation)))
+                            bends.append(snap(camera.worldPoint(at: pointerLocation)))
                         }
                         let path = wirePath(WorkbenchWire.gridRoute(from: start, through: bends))
                         drawWire(path, colour: bench.newWireColour, in: context, dash: [5, 3])
@@ -1058,25 +1064,26 @@ struct WorkbenchView: View {
                 ForEach(routes, id: \.wire.id) { route in
                     let hitArea = StrokeStyle(lineWidth: 12 / camera.scale, lineCap: .round, lineJoin: .round)
                     Color.clear
-                        .contentShape(route.path.strokedPath(hitArea))
+                        .contentShape(route.path.offsetBy(dx: -worldOrigin.x, dy: -worldOrigin.y).strokedPath(hitArea))
                         .gesture(SpatialTapGesture().onEnded { tap in
+                            let worldClick = CGPoint(x: tap.location.x + worldOrigin.x, y: tap.location.y + worldOrigin.y)
                             if bench.selectedTerminal == nil {
                                 selectWire(route.wire.id)
                             } else {
                                 let overlapping = routes.contains { other in
                                     guard other.wire.id != route.wire.id,
-                                          other.path.strokedPath(StrokeStyle(lineWidth: 4 / camera.scale)).contains(tap.location)
+                                          other.path.strokedPath(StrokeStyle(lineWidth: 4 / camera.scale)).contains(worldClick)
                                     else { return false }
                                     let shared = [route.wire.first, route.wire.second].filter {
                                         $0 == other.wire.first || $0 == other.wire.second
                                     }
                                     return !shared.contains {
                                         guard let point = location($0) else { return false }
-                                        return hypot(point.x - tap.location.x, point.y - tap.location.y) <= 6 / camera.scale
+                                        return hypot(point.x - worldClick.x, point.y - worldClick.y) <= 6 / camera.scale
                                     }
                                 }
                                 if !overlapping {
-                                    connect(to: route.wire, points: route.points, near: tap.location)
+                                    connect(to: route.wire, points: route.points, near: worldClick)
                                 }
                             }
                         })
@@ -1334,7 +1341,7 @@ struct WorkbenchView: View {
         .onChange(of: bench.selectedTerminal) { _, _ in pointerLocation = nil }
         .gesture(SpatialTapGesture().onEnded { tap in
             if bench.selectedTerminal != nil {
-                bench.addBend(at: snap(canvasPoint(at: tap.location)))
+                bench.addBend(at: snap(camera.worldPoint(at: tap.location)))
             } else {
                 bench.selectWire(nil)
                 selectedParts.removeAll()
@@ -1358,11 +1365,6 @@ struct WorkbenchView: View {
                     canvasFocused = true
                 }
         )
-    }
-
-    private func canvasPoint(at point: CGPoint) -> CGPoint {
-        let world = camera.worldPoint(at: point)
-        return CGPoint(x: max(0, world.x), y: max(0, world.y))
     }
 
     private func drawGrid(in context: GraphicsContext, viewport: CGSize) {
@@ -1437,11 +1439,11 @@ struct WorkbenchView: View {
                                editResistance: { editingResistance = part.component as? Resistor },
                                editCapacitance: { editingCapacitance = part.component as? Capacitor })
         } else {
-            standardPartCard(part, xorLayout: geometry.xorLayout)
+            standardPartCard(part, packageLayout: geometry.packageLayout)
         }
     }
 
-    private func standardPartCard(_ part: WorkbenchPart, xorLayout: CD4070SchematicLayout?) -> some View {
+    private func standardPartCard(_ part: WorkbenchPart, packageLayout: MultiUnitSchematicLayout?) -> some View {
         let isSelected = selectedParts.contains(part.id)
         let select = { selectPart(part.id) }
         let rotate = rotationAction(for: part.id)
@@ -1450,15 +1452,15 @@ struct WorkbenchView: View {
             if bench.componentAppearance == .physicalDIP, let package = DIPPackage(part: part) {
                 DIPPackageView(package: package, part: part, bench: bench, isSelected: isSelected,
                                select: select, rotate: rotate)
-            } else if let xorLayout {
+            } else if let packageLayout {
                 ZStack(alignment: .topLeading) {
-                    ForEach(xorLayout.units) { unit in
+                    ForEach(packageLayout.units) { unit in
                         SchematicSymbolView(symbol: unit.symbol, part: unit.part, bench: bench,
                                             isSelected: isSelected, select: select, rotate: rotate)
                             .offset(x: unit.origin.x, y: unit.origin.y)
                     }
                 }
-                .frame(width: xorLayout.size.width, height: xorLayout.size.height, alignment: .topLeading)
+                .frame(width: packageLayout.size.width, height: packageLayout.size.height, alignment: .topLeading)
             } else if let symbol = part.librarySymbol(for: bench.componentAppearance) {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select,
                                     rotate: rotate,

@@ -21,12 +21,14 @@ struct LogicSwitchSymbol: View {
 
         let ink = isSelected ? Color.schematicSelectionInk : Color.primary
         let endpoint = Self.endpoint(showsValue: source.showsValue)
+        let buttonCenterX: CGFloat = 32
+        let valueWidth: CGFloat = 26
         let leadEnd = endpoint.x - (bench.showsOpenPinMarker(terminal) ? 2.5 : 0)
 
         ZStack(alignment: .topLeading) {
             Path { path in
                 if source.showsValue {
-                    path.addLines([CGPoint(x: 48, y: endpoint.y), CGPoint(x: leadEnd, y: endpoint.y)])
+                    path.addLines([CGPoint(x: buttonCenterX + valueWidth / 2, y: endpoint.y), CGPoint(x: leadEnd, y: endpoint.y)])
                     return
                 }
                 path.move(to: CGPoint(x: 4, y: endpoint.y))
@@ -45,9 +47,9 @@ struct LogicSwitchSymbol: View {
                 Group {
                     if source.showsValue {
                         Text(source.isOn ? "1" : "0")
-                            .font(.system(size: 20, weight: .bold, design: .monospaced))
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
                             .foregroundStyle(source.isOn ? .white : ink)
-                            .frame(width: 32, height: 30)
+                            .frame(width: valueWidth, height: 16)
                             .background(source.isOn ? Color(red: 0.05, green: 0.43, blue: 0.20) : .clear)
                             .border(source.isOn && !isSelected ? .green : ink, width: 1.5)
                     } else {
@@ -61,7 +63,7 @@ struct LogicSwitchSymbol: View {
                         .stroke(ink, style: StrokeStyle(lineWidth: 1.5, lineCap: .round))
                     }
                 }
-                .frame(width: 44, height: 32)
+                .frame(width: source.showsValue ? 32 : 44, height: source.showsValue ? 18 : 32)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -72,7 +74,7 @@ struct LogicSwitchSymbol: View {
                 PartRotationCommands(rotate: rotate)
                 Button("Remove Part", role: .destructive) { bench.removePart(partID) }
             }
-            .position(x: 32, y: source.showsValue ? 20 : 23)
+            .position(x: buttonCenterX, y: source.showsValue ? 20 : 23)
 
             SchematicPinButton(terminal: terminal, bench: bench)
                 .position(endpoint)
