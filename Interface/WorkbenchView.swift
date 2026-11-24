@@ -43,6 +43,7 @@ struct WorkbenchView: View {
     @State private var scopeWindow = WorkbenchScopeWindow()
     @State private var scopeDocked = false
     @AppStorage("workbenchShowsWireList") private var showsWireList = false
+    @AppStorage(WorkbenchNavigationStyle.preferenceKey) private var navigationStyle = WorkbenchNavigationStyle.kiCad
     @State private var showingLibrary = false
     @State private var importFile: CircuitImportFile?
 
@@ -212,8 +213,12 @@ struct WorkbenchView: View {
                 }
                 .background {
                     WorkbenchNavigation(
+                        style: navigationStyle,
                         pan: { camera.pan(x: $0, y: $1) },
                         zoom: { camera.zoom(to: camera.scale * $0, around: $1) },
+                        scroll: { mode, x, y, precise, momentum, point in
+                            mode.apply(x: x, y: y, precise: precise, momentum: momentum, at: point, to: &camera)
+                        },
                         editShortcut: handleEditShortcut
                     )
                 }
@@ -482,7 +487,7 @@ struct WorkbenchView: View {
                 .buttonStyle(.borderless)
                 .monospacedDigit()
                 .accessibilityLabel("Reset zoom to 100 percent")
-                .help("Reset zoom to 100%. Pinch or ⌘-scroll to zoom, or scroll to pan.")
+                .help("Reset zoom to 100%. Pinch to zoom. Middle-drag or Space-drag to pan.")
                 .disabled(bench.parts.isEmpty)
             Divider().frame(height: 12)
             Text(status)

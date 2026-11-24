@@ -10,6 +10,32 @@ struct CMOS4000SimulatorApp: App {
         }
         .defaultSize(width: 900, height: 700)
         .commands { WorkbenchCommands() }
+
+        Settings {
+            WorkbenchNavigationSettings()
+        }
+    }
+}
+
+private struct WorkbenchNavigationSettings: View {
+    @AppStorage(WorkbenchNavigationStyle.preferenceKey) private var style = WorkbenchNavigationStyle.kiCad
+
+    var body: some View {
+        Form {
+            Picker("Workbench navigation", selection: $style) {
+                ForEach(WorkbenchNavigationStyle.allCases, id: \.self) { style in
+                    Text(style.rawValue).tag(style)
+                }
+            }
+            Text(style == .kiCad
+                 ? "Scroll vertically to zoom and horizontally to pan."
+                 : "Scroll in any direction to pan. Command-scroll to zoom.")
+                .foregroundStyle(.secondary)
+            Text("Pinch to zoom. Middle-drag or hold Space and drag to pan.")
+                .foregroundStyle(.secondary)
+        }
+        .padding(20)
+        .frame(width: 440)
     }
 }
 

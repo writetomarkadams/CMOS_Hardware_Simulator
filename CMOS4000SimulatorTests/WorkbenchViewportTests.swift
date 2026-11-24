@@ -40,6 +40,45 @@ struct WorkbenchViewportTests {
         #expect(WorkbenchWire.snap(viewport.worldPoint(at: viewport.screenPoint(at: bend))) == bend)
     }
 
+    @Test func kiCadWheelZoomPreservesPointerAndGridAtFractionalScale() {
+        var viewport = WorkbenchViewport()
+        viewport.pan(x: 128, y: 72)
+        let bend = CGPoint(x: -40, y: 60)
+        let pointer = viewport.screenPoint(at: bend)
+        let mode = WorkbenchNavigationStyle.kiCad.scrollMode(x: 0.2, y: 3, command: false)
+        mode.apply(x: 0.2, y: 3, precise: true, momentum: false, at: pointer, to: &viewport)
+
+        #expect(mode == .zoom)
+        #expect(viewport.scale > 1 && viewport.scale < 1.1)
+        #expect(WorkbenchWire.snap(viewport.worldPoint(at: pointer)) == bend)
+        let projected = viewport.screenPoint(at: bend)
+        #expect(abs(projected.x - pointer.x) < 0.000001)
+        #expect(abs(projected.y - pointer.y) < 0.000001)
+
+        let scale = viewport.scale
+        let origin = viewport.origin
+        mode.apply(x: 0, y: 20, precise: true, momentum: true, at: pointer, to: &viewport)
+        #expect(viewport.scale == scale)
+        #expect(viewport.origin == origin)
+    }
+
+    @Test func scrollStylesPanInScreenCoordinatesAndKeepCommandZoom() {
+        var viewport = WorkbenchViewport()
+        viewport.zoom(to: 2, around: .zero)
+        let horizontal = WorkbenchNavigationStyle.kiCad.scrollMode(x: -3, y: 0.2, command: false)
+        #expect(horizontal == .horizontalPan)
+        horizontal.apply(x: -3, y: 0.2, precise: true, momentum: true, at: .zero, to: &viewport)
+        #expect(viewport.origin == CGPoint(x: -3, y: 0))
+
+        let macOS = WorkbenchNavigationStyle.macOS
+        let pan = macOS.scrollMode(x: 1, y: -2, command: false)
+        #expect(pan == .pan)
+        pan.apply(x: 1, y: -2, precise: false, momentum: false, at: .zero, to: &viewport)
+        #expect(viewport.origin == CGPoint(x: 7, y: -20))
+        #expect(viewport.scale == 2)
+        #expect(macOS.scrollMode(x: 1, y: -2, command: true) == .zoom)
+    }
+
     @Test func fitCentersOffsetBoundsWithPadding() {
         var viewport = WorkbenchViewport()
         let bounds = CGRect(x: -80, y: 950, width: 400, height: 200)
