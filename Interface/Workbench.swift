@@ -491,6 +491,7 @@ final class Workbench {
         let switches: [(WorkbenchSwitch, Bool)]
         let parts: [WorkbenchPart]
         let powerMode: PowerMode
+        let componentAppearance: ComponentAppearance
         let wires: [WorkbenchWire]
         let junctions: [Int: CGPoint]
         let schematicMarks: [SchematicMark]
@@ -508,7 +509,7 @@ final class Workbench {
 
     private struct HistoryEntry {
         let edit: Edit
-        let wireColourOnly: Bool
+        let presentationOnly: Bool
     }
 
     private var undoHistory: [HistoryEntry] = []
@@ -522,7 +523,7 @@ final class Workbench {
                  guard let source = part.component as? WorkbenchSwitch else { return nil }
                  return (source, source.isOn)
              },
-             parts: parts, powerMode: powerMode, wires: wires, junctions: junctions, schematicMarks: schematicMarks, positions: positions, rotations: rotations,
+             parts: parts, powerMode: powerMode, componentAppearance: componentAppearance, wires: wires, junctions: junctions, schematicMarks: schematicMarks, positions: positions, rotations: rotations,
              clockFrequencies: clockFrequencies, ledColours: ledColours,
              resistances: parts.compactMap { part in
                  guard let resistor = part.component as? Resistor else { return nil }
@@ -535,9 +536,9 @@ final class Workbench {
              scopeProbes: scopeProbes, nextPartID: nextPartID, nextChipNumber: nextChipNumber, nextWireID: nextWireID)
     }
 
-    private func recordEdit(wireColourOnly: Bool = false) {
+    private func recordEdit(presentationOnly: Bool = false) {
         pendingPlacementID = nil
-        undoHistory.append(HistoryEntry(edit: currentEdit, wireColourOnly: wireColourOnly))
+        undoHistory.append(HistoryEntry(edit: currentEdit, presentationOnly: presentationOnly))
         if undoHistory.count > 100 { undoHistory.removeFirst() }
         redoHistory.removeAll()
         revision = UUID()
@@ -545,21 +546,22 @@ final class Workbench {
 
     func undo() {
         guard let entry = undoHistory.popLast() else { return }
-        redoHistory.append(HistoryEntry(edit: currentEdit, wireColourOnly: entry.wireColourOnly))
+        redoHistory.append(HistoryEntry(edit: currentEdit, presentationOnly: entry.presentationOnly))
         restoreHistory(entry)
     }
 
     func redo() {
         guard let entry = redoHistory.popLast() else { return }
-        undoHistory.append(HistoryEntry(edit: currentEdit, wireColourOnly: entry.wireColourOnly))
+        undoHistory.append(HistoryEntry(edit: currentEdit, presentationOnly: entry.presentationOnly))
         restoreHistory(entry)
     }
 
     private func restoreHistory(_ entry: HistoryEntry) {
-        if entry.wireColourOnly {
+        if entry.presentationOnly {
             // Preserve live simulation and scope acquisition for cosmetic edits.
             revision = entry.edit.revision
             document = entry.edit.document
+            componentAppearance = entry.edit.componentAppearance
             wires = entry.edit.wires
         } else {
             restore(entry.edit)
@@ -575,6 +577,7 @@ final class Workbench {
         cancelWire()
         selectedWireID = nil
         powerMode = edit.powerMode
+        componentAppearance = edit.componentAppearance
         scope.clear()
         scopeProbes = edit.scopeProbes
         parts = edit.parts
@@ -593,6 +596,12 @@ final class Workbench {
         nextChipNumber = edit.nextChipNumber
         nextWireID = edit.nextWireID
         rebuildNets()
+    }
+
+    func setComponentAppearance(_ appearance: ComponentAppearance) {
+        guard appearance != componentAppearance else { return }
+        recordEdit(presentationOnly: true)
+        componentAppearance = appearance
     }
 
     func setPowerMode(_ mode: PowerMode) {
@@ -1036,7 +1045,7 @@ final class Workbench {
 
     func setWireColour(_ colour: WireColour, for id: Int) {
         guard let index = wires.firstIndex(where: { $0.id == id }), wires[index].colour != colour else { return }
-        recordEdit(wireColourOnly: true)
+        recordEdit(presentationOnly: true)
         wires[index].colour = colour
     }
 
@@ -1248,7 +1257,8 @@ final class Workbench {
         let loaded = try archive.makeCircuit()
         recordEdit()
         startDocument(at: url, clean: true)
-        restore(Edit(revision: revision, document: document, switches: [], parts: loaded.parts, powerMode: archive.savedPowerMode, wires: loaded.wires, junctions: archive.junctions,
+        restore(Edit(revision: revision, document: document, switches: [], parts: loaded.parts, powerMode: archive.savedPowerMode,
+                     componentAppearance: archive.savedComponentAppearance, wires: loaded.wires, junctions: archive.junctions,
                      schematicMarks: archive.schematicMarks ?? [],
                      positions: loaded.positions, rotations: loaded.rotations,
                      clockFrequencies: loaded.frequencies, ledColours: loaded.colours, resistances: [], capacitances: [],
@@ -1271,7 +1281,7 @@ final class Workbench {
         recordEdit()
         if replacing { startDocument(clean: false) }
         restore(Edit(revision: revision, document: document, switches: [], parts: (append ? parts : []) + imported.parts,
-                     powerMode: append ? powerMode : .explicit,
+                     powerMode: append ? powerMode : .explicit, componentAppearance: componentAppearance,
                      wires: (append ? wires : []) + imported.wires,
                      junctions: (append ? junctions : [:]).merging(imported.junctions) { _, incoming in incoming },
                      schematicMarks: (append ? schematicMarks : []) + imported.schematicMarks,

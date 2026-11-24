@@ -1,6 +1,6 @@
 import SwiftUI
 
-enum ComponentAppearance: String, CaseIterable {
+enum ComponentAppearance: String, CaseIterable, Codable {
     case schematic = "Schematic"
     case physicalDIP = "Physical DIP"
 

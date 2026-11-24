@@ -512,7 +512,7 @@ struct WorkbenchView: View {
             wireList: $showsWireList,
             componentAppearance: Binding(get: { bench.componentAppearance }, set: { appearance in
                 bench.hoveredTerminal = nil
-                bench.componentAppearance = appearance
+                bench.setComponentAppearance(appearance)
                 if let archive = placement?.archive { beginPlacement(archive) }
             }),
             zoomIn: { zoom(by: 1.25) }, zoomOut: { zoom(by: 0.8) },

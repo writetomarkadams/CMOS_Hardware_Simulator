@@ -96,6 +96,8 @@ struct WorkbenchArchive: Codable, FileDocument {
     private let version: Int
     private let powerMode: PowerMode?
     var savedPowerMode: PowerMode { powerMode ?? .explicit }
+    private let componentAppearance: ComponentAppearance?
+    var savedComponentAppearance: ComponentAppearance { componentAppearance ?? .schematic }
     private let parts: [Part]
     let wires: [WorkbenchWire]
     let junctions: [Int: CGPoint]
@@ -106,6 +108,7 @@ struct WorkbenchArchive: Codable, FileDocument {
          junctions: [Int: CGPoint]? = nil) throws {
         version = 2
         powerMode = bench.powerMode
+        componentAppearance = partIDs == nil ? bench.componentAppearance : nil
         self.wires = wires ?? bench.wires
         self.junctions = junctions ?? bench.junctions
         schematicMarks = partIDs == nil && !bench.schematicMarks.isEmpty ? bench.schematicMarks : nil

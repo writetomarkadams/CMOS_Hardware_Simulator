@@ -5,6 +5,12 @@ import Testing
 
 @MainActor
 struct DIPAppearanceTests {
+    private func circuitData(in archive: Data) throws -> Data {
+        var json = try #require(JSONSerialization.jsonObject(with: archive) as? [String: Any])
+        json.removeValue(forKey: "componentAppearance")
+        return try JSONSerialization.data(withJSONObject: json, options: .sortedKeys)
+    }
+
     @Test func dualBCDCounterPackagePreservesBothCountersAndWiring() throws {
         let bench = Workbench()
         let chip = DualCounter(.bcd)
@@ -53,7 +59,7 @@ struct DIPAppearanceTests {
         bench.rotatePart(part.id, by: 1)
         let archive = try WorkbenchArchive(bench: bench).encoded()
         bench.componentAppearance = .schematic
-        #expect(try WorkbenchArchive(bench: bench).encoded() == archive)
+        #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: archive))
 
         let reopened = Workbench()
         try reopened.open(JSONDecoder().decode(WorkbenchArchive.self, from: archive))
@@ -112,7 +118,7 @@ struct DIPAppearanceTests {
         let archive = try WorkbenchArchive(bench: bench).encoded()
         bench.componentAppearance = .schematic
         #expect(bench.circuitNet(at: led) === net)
-        #expect(try WorkbenchArchive(bench: bench).encoded() == archive)
+        #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: archive))
 
         let reopened = Workbench()
         try reopened.open(JSONDecoder().decode(WorkbenchArchive.self, from: archive))
@@ -213,7 +219,7 @@ struct DIPAppearanceTests {
 
         let bytes = try WorkbenchArchive(bench: bench).encoded()
         bench.componentAppearance = .physicalDIP
-        #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+        #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         let reopened = Workbench()
         try reopened.open(JSONDecoder().decode(WorkbenchArchive.self, from: bytes))
         #expect(DIPPackage(part: try #require(reopened.parts.first))?.pins.map(\.name) == package.pins.map(\.name))
@@ -262,7 +268,7 @@ struct DIPAppearanceTests {
 
         let bytes = try WorkbenchArchive(bench: bench).encoded()
         bench.componentAppearance = .physicalDIP
-        #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+        #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         let reopened = Workbench()
         try reopened.open(JSONDecoder().decode(WorkbenchArchive.self, from: bytes))
         #expect(DIPPackage(part: try #require(reopened.parts.first))?.pins.map(\.name) == package.pins.map(\.name))
@@ -318,7 +324,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: output) === net)
             #expect(bench.circuitNet(at: led) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == archive)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: archive))
         }
 
         let reopened = Workbench()
@@ -378,7 +384,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: output) === net)
             #expect(bench.circuitNet(at: led) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == archive)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: archive))
         }
 
         let reopened = Workbench()
@@ -435,7 +441,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: carry) === net)
             #expect(bench.circuitNet(at: led) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         }
 
         let reopened = Workbench()
@@ -490,7 +496,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: common) === net)
             #expect(bench.circuitNet(at: otherCommon) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         }
 
         let reopened = Workbench()
@@ -537,7 +543,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: xCommon) === net)
             #expect(bench.circuitNet(at: yCommon) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         }
 
         let reopened = Workbench()
@@ -584,7 +590,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: output) === net)
             #expect(bench.circuitNet(at: led) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         }
 
         let reopened = Workbench()
@@ -631,7 +637,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: aCommon) === net)
             #expect(bench.circuitNet(at: cCommon) === net)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         }
 
         let reopened = Workbench()
@@ -692,7 +698,7 @@ struct DIPAppearanceTests {
         bench.componentAppearance = .schematic
         #expect(bench.circuitNet(at: output) === net)
         #expect(bench.circuitNet(at: led) === net)
-        #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+        #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
 
         let reopened = Workbench()
         try reopened.open(JSONDecoder().decode(WorkbenchArchive.self, from: bytes))
@@ -756,7 +762,7 @@ struct DIPAppearanceTests {
             bench.componentAppearance = appearance
             #expect(bench.circuitNet(at: input) === net)
             #expect(bench.readings[output] == .high)
-            #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+            #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         }
 
         let reopened = Workbench()
@@ -792,7 +798,7 @@ struct DIPAppearanceTests {
         bench.newWireColour = .yellow
         bench.componentAppearance = .physicalDIP
         #expect(bench.newWireColour == .black)
-        #expect(try WorkbenchArchive(bench: bench).encoded() == bytes)
+        #expect(try circuitData(in: WorkbenchArchive(bench: bench).encoded()) == circuitData(in: bytes))
         #expect(bench.circuitRevision == revision)
         #expect(bench.circuitNet(at: clock) === net)
         #expect(bench.scopeNet(for: probe) === net)

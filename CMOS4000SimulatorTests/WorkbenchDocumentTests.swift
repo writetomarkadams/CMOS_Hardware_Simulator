@@ -8,6 +8,66 @@ struct WorkbenchDocumentTests {
         FileManager.default.temporaryDirectory.appendingPathComponent("\(UUID()).json")
     }
 
+    @Test(arguments: ComponentAppearance.allCases)
+    func savesAndReopensComponentAppearance(_ appearance: ComponentAppearance) throws {
+        let bench = Workbench()
+        let file = temporaryFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+        #expect(bench.componentAppearance == .schematic)
+        bench.add("Clock", component: WorkbenchClock())
+        bench.add("LED", component: WorkbenchLED())
+        let output = WorkbenchTerminal(partID: 1, pinNumber: 1)
+        let input = WorkbenchTerminal(partID: 2, pinNumber: 1)
+        bench.select(output)
+        bench.select(input)
+        bench.setComponentAppearance(appearance)
+        try bench.save(to: file)
+
+        let reopened = Workbench()
+        let otherAppearance: ComponentAppearance = appearance == .schematic ? .physicalDIP : .schematic
+        reopened.setComponentAppearance(otherAppearance)
+        let archive = try JSONDecoder().decode(WorkbenchArchive.self, from: Data(contentsOf: file))
+        try reopened.open(archive, at: file)
+
+        #expect(reopened.componentAppearance == appearance)
+        #expect(!reopened.isDirty)
+        #expect(reopened.parts.map(\.id) == bench.parts.map(\.id))
+        let wire = try #require(reopened.wires.first)
+        #expect(reopened.wires.count == 1)
+        #expect(wire.first == output)
+        #expect(wire.second == input)
+        let net = try #require(reopened.circuitNet(at: output))
+        #expect(net === reopened.circuitNet(at: input))
+
+        reopened.setComponentAppearance(otherAppearance)
+        #expect(reopened.isDirty)
+        reopened.undo()
+        #expect(reopened.componentAppearance == appearance)
+        #expect(!reopened.isDirty)
+        #expect(net === reopened.circuitNet(at: input))
+
+        let clipboard = try bench.copyParts([1, 2])
+        reopened.setComponentAppearance(otherAppearance)
+        _ = try reopened.pasteParts(clipboard, by: CGSize(width: 100, height: 100))
+        #expect(reopened.componentAppearance == otherAppearance)
+    }
+
+    @Test(arguments: [1, 2])
+    func legacyWorkbenchReopensInSchematicView(version: Int) throws {
+        let bench = Workbench()
+        bench.setComponentAppearance(.physicalDIP)
+        let encoded = try WorkbenchArchive(bench: bench).encoded()
+        var json = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json["version"] = version
+        json.removeValue(forKey: "componentAppearance")
+        let legacy = try JSONSerialization.data(withJSONObject: json)
+
+        try bench.open(JSONDecoder().decode(WorkbenchArchive.self, from: legacy))
+
+        #expect(bench.componentAppearance == .schematic)
+        #expect(!bench.isDirty)
+    }
+
     @Test func editsAndUndoTrackTheSavedRevision() throws {
         let bench = Workbench()
         let file = temporaryFile()

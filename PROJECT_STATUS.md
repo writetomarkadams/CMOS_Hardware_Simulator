@@ -4,7 +4,7 @@
 **Platform:** macOS / SwiftUI / Xcode  
 **Repository:** https://github.com/writetomarkadams/CMOS_Hardware_Simulator  
 **Branch:** main  
-**Last updated:** 23 November 2026\
+**Last updated:** 24 November 2026\
 **Project root:** /Users/mark.adams/Documents/GitHub/CMOS_Hardware_Simulator
 
 Use this project root for all development. Leave the previous project location untouched.
@@ -17,7 +17,9 @@ The application opens directly into the Circuit Workbench. Users can place compo
 
 ### Workbench files and unsaved changes
 
-- The macOS edited-window indicator reflects persisted circuit edits, including placement, wiring, component values, input-switch settings, power mode and scope probe assignments. Undo and Redo track the last saved revision. Simulation state, scope captures and viewport changes do not mark a circuit edited.
+- On 24 November 2026, the full macOS Xcode suite passed 171 tests (191 executions), with zero failures or skips. Regression coverage includes mode round-trips and legacy defaults, clipboard wiring, pin alignment and cursor-centred zoom. The native Save and Open dialogs restored Physical DIP in a fresh window.
+
+- The macOS edited-window indicator reflects persisted circuit edits, including placement, wiring, component values, input-switch settings, power mode, component appearance and scope probe assignments. Undo and Redo track the last saved revision. Simulation state, scope captures and viewport changes do not mark a circuit edited.
 - Closing a workbench window, quitting, clearing, opening another archive or replacing the circuit from a KiCad preview prompts to Save, Don’t Save or Cancel when the circuit has unsaved edits. Cancelling the prompt or a Save As panel, or failing to write the file, stops the requested action. Quit checks each workbench window.
 - Save writes to the current JSON archive. Untitled circuits open a native Save As panel, and File → Save As… can choose a new destination for a named circuit. Clear starts a clean untitled workbench. A KiCad replacement starts an edited untitled workbench. Adding an import to the current circuit counts as an edit.
 - On 21 November 2026, all 118 macOS Xcode tests passed. Native checks covered window close via ⌘W, quit with multiple workbench windows, Save As cancellation, save before clear, reopening the saved archive, and cancelling or confirming a KiCad replacement.
@@ -26,15 +28,15 @@ The application opens directly into the Circuit Workbench. Users can place compo
 
 - The dotted canvas fills the workbench between two 40-point icon strips. The left strip offers Select (V), Wire (W), Add Part (A), Rotate, Zoom and Fit. Pin clicks start wires by default. Select mode cancels an unfinished wire and reserves canvas actions for selection. The right strip opens the Wire List and Oscilloscope, which are also available under View. The top bar keeps labelled Open, Save and Import buttons, and the bottom strip shows wiring hints, zoom, simulation status and power mode. The native menus retain the existing commands and shortcuts.
 - Open **View → Wire List** to show the optional right sidebar. It remembers its visibility and supports selecting a wire or removing it from its context menu.
-- Zoom spans 25–400%. Pinch or Command-scroll over the canvas to zoom around the pointer. Scroll or hold Space and drag to pan. Use Fit Circuit (⌘9) in the left strip or click the zoom percentage to reset to 100% (⌘0). Fit uses the rendered component bounds, wire paths and schematic annotations. The viewport is independent of the circuit archive.
+- Zoom spans 25–400%. The default KiCad navigation uses vertical scroll to zoom around the pointer and horizontal scroll to pan. Choose macOS navigation in Settings to pan with scroll and zoom with Command-scroll. Both styles support pinch to zoom, middle-button drag and Space-drag to pan. Use Fit Circuit (⌘9) in the left strip or click the zoom percentage to reset to 100% (⌘0). Fit uses the rendered component bounds, wire paths and schematic annotations. The viewport is independent of the circuit archive.
 
 - On 20 November 2026 the full macOS suite passed all 117 case executions, including new viewport tests for cursor anchoring, zoom limits and fit. Native checks covered save/reopen, wiring, snapped part dragging at 400%, marquee selection, scroll panning, and reopening and docking a frozen scope with a probe attached. Physical trackpad pinch and moving the window between displays were not exercised.
 
 ### Workbench selection and duplication
 
-- Click a component body to select it, Shift-click to toggle it, or drag a marquee from empty canvas. Space-drag and scrolling pan the viewport. While a wire is in progress, empty-canvas clicks place waypoints and marquee selection is suspended. Logic switches and clock controls still operate on an ordinary click. Shift-click selects them without changing their output or run state.
+- Click a component body to select it, Shift-click to toggle it, or drag a marquee from empty canvas. Use Space-drag or middle-button drag to pan the viewport. While a wire is in progress, empty-canvas clicks place waypoints and marquee selection is suspended. Logic switches and clock controls still operate on an ordinary click. Shift-click selects them without changing their output or run state.
 - Drag any selected component to move the group by one grid-snapped offset. Internal wire bends and junctions travel with the group. Boundary wires keep their electrical endpoints and remaining waypoints, with orthogonal leads recalculated as the group moves. Crossings do not join nets.
-- On the focused canvas, ⌘C copies the selection, ⌘V previews a paste, and ⌘D previews a duplicate. Click to place the preview on the grid, or press Escape to cancel. The clipboard captures component configuration and the connections between copied pins. The preview uses outlines and visible wire routes. Each placement gets new part and junction IDs and the first free reference number per prefix, including when KiCad references already occupy that prefix. Multiple copied units of a chip share a fresh package.
+- On the focused canvas, ⌘C copies the selection, ⌘V previews a paste, and ⌘D previews a duplicate. Click to place the preview on the grid, or press Escape to cancel. The clipboard captures component configuration and the connections between copied pins. It retains junction routes wholly inside the selection and trims branches to unselected parts. The preview uses outlines and visible wire routes. Each placement gets new part and junction IDs and the first free reference number per prefix, including when KiCad references already occupy that prefix. Multiple copied units of a chip share a fresh package.
 - Delete removes the selection. A group move, paste, duplicate or delete is one Undo/Redo step. Archives retain copied settings, references and wiring. Separate KiCad schematic annotations stay at their source coordinates. Automatic boundary routes can overlap nearby wires or parts in dense layouts.
 
 - The macOS Xcode suite passed all 121 tests. New cases cover grid-snapped group movement with a boundary wire, electrical independence at overlapping geometry, imported reference allocation, shared chip units, archive round-trip and Undo/Redo. Native checks covered Shift-click, marquee, group dragging, copy and paste placement, duplicate, Escape, and group Delete/Undo.
@@ -56,7 +58,7 @@ The application opens directly into the Circuit Workbench. Users can place compo
 
 ### Workbench component appearance
 
-- **View → Component Appearance** switches the current window between **Schematic** and **Physical DIP**. New workbench windows start in Schematic. The view choice is independent of the circuit archive and undo history.
+- **View → Component Appearance** switches the current window between **Schematic** and **Physical DIP**. New workbench windows start in Schematic. Saving a circuit stores its appearance in the archive. Older archives without that setting open in Schematic. Changing appearance marks the document edited and supports Undo and Redo while preserving live nets and scope acquisition. Pasting uses the destination workbench’s appearance.
 - Add **CD4070** from **Chips** to place all four XOR gates and both supply pins in one part. In Physical DIP, the CD4070 has a cream body with a bold rounded black outline, a top notch and a pin-1 dot. The designation sits near the top, and each internal pin label aligns with its numbered tab. Inputs are green, outputs blue, and supply pins red. Pin order is 1–7 down the left and 14–8 down the right. In Schematic, the complete package shows separate XOR symbols U…A–D and the shared power unit U…E. Their pins retain the same wire and probe attachments when the appearance changes. Choose **CD4070 XOR Gate** to place individual schematic units the same way as for CD4071. The existing NE555 also supports the DIP renderer with its eight-pin layout. Imported drawings, separately placed chip units and other library parts keep their schematic appearance.
 - Both views use the same rotation pivot, electrical terminal IDs, stored wire waypoints and junctions. Displayed wire paths follow the active pin coordinates, including at quarter-turn rotations. Scope probes keep their electrical attachments. As with schematic routing, an automatic route can cross nearby artwork or wires without creating an electrical connection.
 - On 22 November 2026, the macOS Xcode suite passed all 141 tests after the CD4070 artwork correction. Coverage includes CD4070 pin order and XOR behaviour, grid-aligned DIP endpoints across four rotations, orthogonal wiring, live net and probe identity, archive reopen, and new and existing wire colours. The rebuilt native workbench displayed the schematic symbol with the green drawing default and the physical package with the black drawing default. The user approved the physical CD4070 screenshot on 22 November 2026. It is the visual reference for future physical DIP artwork.
@@ -206,7 +208,7 @@ The CD4518 and CD4520 count on a rising CLOCK with ENABLE HIGH, or a falling ENA
 - CXO-DIP8 was replaced by the configurable Clock Source.
 - Labelled Open and Save buttons remain in the file bar. File menu commands act on the focused Workbench window and are disabled while its library, value editor, or file dialog is open.
 - **File → Save… (⌘S)** saves a Workbench JSON file. **File → Open… (⌘O)** opens it. The Open picker also accepts older Workbench files with a non-JSON extension; file contents are validated before replacing the circuit.
-- Files preserve components, package identities, positions, rotations, wires, junctions, switch states, resistance values, LED colours, clock frequencies, and power mode.
+- Files preserve components, package identities, positions, rotations, wires, junctions, switch states, resistance values, LED colours, clock frequencies, power mode, and component appearance.
 - Manual Clock Source components reopen paused. Recognised, powered NE555 RC circuits start automatically when reopened. Archives store circuit configuration, not capacitor voltage or running sequential state.
 
 ## 5. Power and Logic Architecture
@@ -311,6 +313,7 @@ Check commit and push status before switching Macs.
 - Automatic supply voltage is currently fixed at 5 V.
 - High requested clock rates can exceed real-time processing capacity in larger circuits.
 - Build and verify the complete 12/24-hour clock incrementally against the reference KiCad schematic.
+- Plan rotary encoder emulation for a future clock time-setting workflow.
 - Expand the KiCad symbol allowlist and use the shared import topology for future schematic-image inputs.
 - Track user-reported editing and simulation issues as circuits become more complex.
 
