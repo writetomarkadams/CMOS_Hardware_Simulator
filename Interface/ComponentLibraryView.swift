@@ -45,7 +45,7 @@ struct ComponentLibraryView: View {
             case .sevenSegmentDisplay: "MAN74A"
             case .commonAnodeDisplay: "MAN72A"
             case .rippleCounter: "CD4060"
-            case .transistor: "2N3904"
+            case .transistor: "Transistor"
             case .capacitor(let kind): kind.rawValue
             case .pinHeader(let kind): kind.name
             case .resistor: "R_Small"
@@ -80,7 +80,7 @@ struct ComponentLibraryView: View {
             case .sevenSegmentDisplay: "Single Digit LED Display · Common Cathode"
             case .commonAnodeDisplay: "Single Digit LED Display · Common Anode"
             case .rippleCounter: "14-stage Binary Counter"
-            case .transistor: "NPN Transistor (Digital Switch)"
+            case .transistor: "TO-92 · Default \(TransistorDesignation.defaultDevice.rawValue)"
             case .capacitor(let kind): "Capacitor · \(kind.unit) · NE555 RC timing"
             case .pinHeader(let kind): "Vertical · 2.54 mm · \(kind.footprint)"
             case .resistor: "Resistor"
@@ -259,7 +259,7 @@ struct ComponentLibraryView: View {
         case .commonAnodeDisplay:
             bench.add("MAN72A", component: MAN72A())
         case .transistor:
-            bench.add("2N3904", component: NPN2N3904())
+            bench.add("Transistor", component: Transistor())
         case .capacitor(let kind):
             bench.add(kind.rawValue, component: Capacitor(kind))
         case .pinHeader(let kind):

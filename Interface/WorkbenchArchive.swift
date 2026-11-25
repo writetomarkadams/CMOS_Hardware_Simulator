@@ -38,7 +38,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             case is CD4060: self = .divider
             case is MAN74A: self = .display
             case is MAN72A: self = .displayMAN72A
-            case is NPN2N3904: self = .transistor
+            case is Transistor: self = .transistor
             case is Diode1N4148: self = .diode
             case is LED3mm: self = .led3mm
             case is WorkbenchLED: self = .led
@@ -65,6 +65,7 @@ struct WorkbenchArchive: Codable, FileDocument {
         let frequency: ClockFrequency?
         let colour: LEDIndicatorSymbol.LampColour?
         let designation: String?
+        let transistorDesignation: TransistorDesignation?
         let importedReference: String?
         let importedSymbol: ImportedSymbol?
     }
@@ -118,6 +119,7 @@ struct WorkbenchArchive: Codable, FileDocument {
                  component: try Component(part), position: bench.positions[part.id],
                  rotation: bench.rotations[part.id], frequency: bench.clockFrequencies[part.id],
                  colour: bench.ledColours[part.id], designation: part.designation,
+                 transistorDesignation: (part.component as? Transistor)?.designation,
                  importedReference: part.importedReference, importedSymbol: part.importedSymbol)
         }
     }
@@ -183,7 +185,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             case .display: component = MAN74A()
             case .displayMAN72A: component = MAN72A()
             case .driver(let kind): component = SevenSegmentDriver(kind)
-            case .transistor: component = NPN2N3904()
+            case .transistor: component = Transistor(part.transistorDesignation ?? .defaultDevice)
             case .diode: component = Diode1N4148()
             case .led3mm: component = LED3mm()
             case .led: component = WorkbenchLED()

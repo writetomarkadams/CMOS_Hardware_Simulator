@@ -246,7 +246,10 @@ struct CircuitImportPreview {
             return Model(name: "NE555") { NE555() }
         case ("Display_Character", "MAN72A"): return Model(name: "MAN72A") { MAN72A() }
         case ("Display_Character", "MAN74A"): return Model(name: "MAN74A") { MAN74A() }
-        case ("Transistor_BJT", "2N3904"): return Model(name: "2N3904") { NPN2N3904() }
+        case ("Transistor_BJT", "2N3906"): return Model(name: "2N3906") { Transistor(.twoN3906) }
+        case ("Transistor_BJT", "2N3904"): return Model(name: "2N3904") { Transistor(.twoN3904) }
+        case ("Transistor_BJT", "BC547"), ("Transistor_BJT", "BC547B"):
+            return Model(name: TransistorDesignation.bc547B.rawValue) { Transistor(.bc547B) }
         case ("Device", "LED") where part.footprint == LED3mm.footprint:
             return Model(name: "LED_D3.0mm") { LED3mm() }
         case ("Diode", "1N4148"): return Model(name: "1N4148") { Diode1N4148() }

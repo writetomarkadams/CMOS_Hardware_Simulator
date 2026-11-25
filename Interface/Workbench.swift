@@ -120,7 +120,7 @@ struct WorkbenchPart: Identifiable {
         if component is Capacitor { return "C\(id)" }
         if component is Resistor { return "R\(id)" }
         if component is Diode1N4148 || component is LED3mm { return "D\(id)" }
-        if component is NPN2N3904 { return "Q\(id)" }
+        if component is Transistor { return "Q\(id)" }
         return nil
     }
 
@@ -140,8 +140,9 @@ struct WorkbenchPart: Identifiable {
     }
 
     var label: String {
-        if let reference { return "\(name) \(reference)" }
-        return "\(name) \(id)"
+        let displayName = (component as? Transistor)?.designation.rawValue ?? name
+        if let reference { return "\(displayName) \(reference)" }
+        return "\(displayName) \(id)"
     }
 
     var pins: [Int: Pin] {
@@ -886,6 +887,29 @@ final class Workbench {
         recordEdit()
         capacitor.setCapacitance(value)
         settle()
+    }
+
+    func canSetTransistorDesignation(_ designation: TransistorDesignation, for id: Int) -> Bool {
+        guard let part = parts.first(where: { $0.id == id }),
+              let transistor = part.component as? Transistor else { return false }
+        if designation.definition.preservesConnections(of: transistor.definition) { return true }
+        // Imported graphics use the original symbol's pin offsets.
+        return part.importedSymbol == nil && !wires.contains { $0.first.partID == id || $0.second.partID == id }
+    }
+
+    func setTransistorDesignation(_ designation: TransistorDesignation, for id: Int) {
+        guard let index = parts.firstIndex(where: { $0.id == id }),
+              let transistor = parts[index].component as? Transistor,
+              transistor.designation != designation,
+              canSetTransistorDesignation(designation, for: id) else { return }
+        let part = parts[index]
+        recordEdit()
+        parts[index] = WorkbenchPart(id: id, name: part.name, component: Transistor(designation),
+                                     unitPlacement: part.unitPlacement, chipNumber: part.chipNumber,
+                                     importedReference: part.importedReference, importedSymbol: part.importedSymbol,
+                                     designation: part.designation)
+        cancelWire()
+        rebuildNets()
     }
 
     func packages(for kind: MultiUnitChip) -> [Int] {

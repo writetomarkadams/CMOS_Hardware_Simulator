@@ -8,14 +8,17 @@ struct SchematicSymbolGeometry {
     let padding: CGFloat
     let size: CGSize
 
-    init(symbol: KiCadSymbol, part: WorkbenchPart) {
+    init(symbol: KiCadSymbol, part: WorkbenchPart, appearance: ComponentAppearance = .schematic) {
         // Keep the MAN74A placement and rotation pivot shared with its physical face.
         let layoutSymbol = part.component is MAN74A ? KiCadSymbol.man74a : symbol
         bounds = layoutSymbol.terminals.reduce(layoutSymbol.body) { rect, pin in
             rect.union(CGRect(origin: pin.position, size: .zero))
         }
         padding = symbol.polygon.isEmpty && !(part.component is Diode1N4148 || part.component is LED3mm) ? 20 : 30
-        let labelWidth: CGFloat = symbol.isCircular || part.component is Resistor || part.component is Capacitor ? 85 : 0
+        let usesAxialLayout = appearance == .physicalDIP && part.axialPackageSymbol != nil
+        let hasSideLabel = symbol.isCircular
+            || (!usesAxialLayout && (part.component is Capacitor || part.component is Resistor))
+        let labelWidth: CGFloat = hasSideLabel ? 85 : 0
         size = CGSize(width: Self.pivotAlignedSize(bounds.width * Self.scale + 2 * padding + labelWidth),
                       height: Self.pivotAlignedSize(bounds.height * Self.scale + 2 * padding))
     }
@@ -87,6 +90,7 @@ struct SchematicPartGeometry {
     let pins: [Int: CGPoint]
 
     let packageLayout: MultiUnitSchematicLayout?
+    let to92Package: TO92Package?
 
     private let originHeight: CGFloat
 
@@ -111,6 +115,13 @@ struct SchematicPartGeometry {
         } else {
             packageLayout = nil
         }
+        to92Package = appearance == .physicalDIP ? TO92Package(part: part) : nil
+        if let to92Package {
+            size = to92Package.size
+            pins = to92Package.endpoints
+            originHeight = SchematicPartGeometry(part: part, turns: turns).size.height
+            return
+        }
         if appearance == .physicalDIP, let package = DIPPackage(part: part) {
             size = package.size
             pins = package.endpoints
@@ -133,7 +144,7 @@ struct SchematicPartGeometry {
             return
         }
         if let symbol = part.librarySymbol(for: appearance) {
-            let geometry = SchematicSymbolGeometry(symbol: symbol, part: part)
+            let geometry = SchematicSymbolGeometry(symbol: symbol, part: part, appearance: appearance)
             size = geometry.size
             pins = Dictionary(uniqueKeysWithValues: symbol.terminals.map { ($0.id, geometry.endpoint($0)) })
         } else {
@@ -156,7 +167,10 @@ struct SchematicPartGeometry {
             }
             pins = [1: pin]
         }
-        originHeight = size.height
+        // The axial view has a shorter frame. Retain the schematic placement pivot.
+        originHeight = appearance == .physicalDIP && part.axialPackageSymbol != nil
+            ? SchematicPartGeometry(part: part, turns: turns).size.height
+            : size.height
     }
 
     func canvasOrigin(at position: CGPoint, imported: Bool) -> CGPoint {
@@ -168,7 +182,7 @@ struct SchematicPartGeometry {
     func location(of number: Int, at position: CGPoint, turns: Int, imported: Bool) -> CGPoint? {
         guard var offset = pins[number] else { return nil }
         let origin = canvasOrigin(at: position, imported: imported)
-        if !imported {
+        if !imported || to92Package != nil {
             offset = CGPoint(x: offset.x - size.width / 2, y: offset.y - size.height / 2)
         }
         offset = offset.schematicRotated(turns)
@@ -190,7 +204,17 @@ extension CGPoint {
 extension WorkbenchPart {
     func librarySymbol(for appearance: ComponentAppearance) -> KiCadSymbol? {
         if appearance == .schematic && component is MAN74A { return .man74aSchematic }
+        if appearance == .physicalDIP, let axialPackageSymbol { return axialPackageSymbol }
         return librarySymbol
+    }
+
+    var axialPackageSymbol: KiCadSymbol? {
+        switch component {
+        case is Resistor: .axialResistor
+        case let capacitor as Capacitor:
+            capacitor.kind == .polarized ? .axialPolarizedCapacitor : .axialSmallCapacitor
+        default: nil
+        }
     }
 
     var librarySymbol: KiCadSymbol? {
@@ -204,7 +228,12 @@ extension WorkbenchPart {
         case let driver as SevenSegmentDriver: symbol = KiCadSymbol.displayDrivers[driver.kind]
         case is MAN72A: symbol = KiCadSymbol.man72a
         case is MAN74A: symbol = KiCadSymbol.man74a
-        case is NPN2N3904: symbol = KiCadSymbol.npn2N3904
+        case let transistor as Transistor:
+            switch transistor.definition.symbol {
+            case .npn2N3904: symbol = KiCadSymbol.npn2N3904
+            case .bc547: symbol = KiCadSymbol.bc547
+            case .pnp2N3906: symbol = KiCadSymbol.pnp2N3906
+            }
         case let capacitor as Capacitor: symbol = KiCadSymbol.capacitors[capacitor.kind]
         case is Resistor: symbol = KiCadSymbol.smallResistor
         case is LED3mm: symbol = KiCadSymbol.led3mm

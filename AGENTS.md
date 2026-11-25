@@ -29,6 +29,28 @@ The simulator supports individual IC pin connections, interactive wiring, digita
 - Build and test changes before reporting completion.
 - Do not commit or push changes unless requested.
 
+## Component modelling standard
+
+- Identify the manufacturer, part number and suffix or grade, package,
+  datasheet revision and link. Cite the relevant pin diagram, truth table,
+  electrical table or curve. If using a SPICE model, record its publisher,
+  version, license and role in implementation or validation.
+- Verify physical pin numbers, terminal roles and viewing orientation. Keep
+  schematic symbols, package views, KiCad import, solver terminals and saved
+  wiring consistent. Test rotation and archive compatibility when a component
+  has multiple views or designations.
+- Declare each simulation path and its fidelity, supported topology, operating
+  range and fallback. Identify omitted effects that matter for the supported
+  use case.
+- Record every electrical parameter’s units, provenance and role as a solver
+  input, display value or rating check. Preserve bias, load, temperature and
+  pulse conditions. Label values as typical, guaranteed minimum or maximum,
+  absolute rating, fitted value or approximation.
+- Test the component through its normal simulator entry point. Keep behavior
+  regressions and datasheet comparisons explicit. A datasheet comparison must
+  state the fixture, operating conditions, expected result and tolerance.
+  Report known discrepancies and unsupported fixtures with the model.
+
 ## Component inventory
 
 The following components have been implemented and tested.
@@ -126,6 +148,10 @@ Display segments must respond to their electrical connections, not automatically
 
 `LED_D3.0mm` maps KiCad `Device:LED` with footprint `LED_THT:LED_D3.0mm`. Preserve pin 1 cathode and pin 2 anode. It glows when the DC solver finds forward current. Keep the existing one-pin Logic LED separate, and verify forward, reverse and disconnected wiring, import and archive round-trips.
 
+### Transistors
+
+The Transistor component defaults to onsemi 2N3904. The BC547B designation uses the onsemi BC547BG and reverses collector and emitter pin numbers relative to 2N3904. Preserve designation, pin numbers, rotation, KiCad symbol mapping and archive defaults. Both use ideal digital switching and limited grounded-emitter DC approximations. The onsemi 2N3906 uses E–B–C in the same TO-92 renderer, an inward schematic emitter arrow, and an ideal active-LOW high-side switch with a HIGH emitter. Keep its collector out of the discrete DC solve. See PROJECT_STATUS.md for eligibility, parameter provenance and known discrepancies.
+
 ### Connectors
 
 The vertical 2.54 mm pin headers (1×2, 1×3, 1×8) expose independent physical contacts. They never drive or bridge nets. Preserve pin numbering and validate the KiCad footprint together with the matching schematic symbol.
@@ -167,6 +193,8 @@ For all new or modified components, verify:
 5. Work toward simulating a complete CMOS digital clock.
 
 ## Latest verification
+
+On 25 November 2026, the macOS build and all 189 tests passed with the digital 2N3906 designation. Coverage includes high-side switching, open inputs, DC isolation at the collector, pin geometry, KiCad import and archive restore.
 
 On 20 November 2026, all 100 macOS Xcode tests passed with the CD4029 addition. Coverage includes binary and decade rollover in both directions, asynchronous JAM, carry inhibit, common-clock cascading, supply loss, KiCad import, and Workbench archives.
 

@@ -4,7 +4,7 @@
 **Platform:** macOS / SwiftUI / Xcode  
 **Repository:** https://github.com/writetomarkadams/CMOS_Hardware_Simulator  
 **Branch:** main  
-**Last updated:** 24 November 2026\
+**Last updated:** 25 November 2026\
 **Project root:** /Users/mark.adams/Documents/GitHub/CMOS_Hardware_Simulator
 
 Use this project root for all development. Leave the previous project location untouched.
@@ -14,6 +14,8 @@ Use this project root for all development. Leave the previous project location u
 A macOS application for building and simulating electronic circuits, with an initial focus on CMOS 4000-series integrated circuits.
 
 The application opens directly into the Circuit Workbench. Users can place components, wire individual physical pins, configure sources and indicators, and run digital simulations. The longer-term target is a complete CMOS 12/24-hour clock.
+
+The macOS app includes an AppIcon asset in Debug and Release. The built app keeps the bundle name CMOS4000Simulator.
 
 ### Workbench files and unsaved changes
 
@@ -67,6 +69,9 @@ The application opens directly into the Circuit Workbench. Users can place compo
 
 - **CD4511** uses the 16-pin DIP artwork in Physical DIP and retains its schematic symbol in Schematic. The decoder's wired segment outputs continue to drive the display across appearance changes and archive reopen.
 - **MAN74A** uses a labelled seven-segment schematic symbol with segment pins on the left and common cathodes below. Physical DIP shows a dark red display face. **MAN72A** uses a labelled common-anode schematic symbol and a dark physical face with red segments. Segment illumination follows the wired segment and common-pin states.
+
+- Physical DIP appearance also draws axial resistors, 1N4148 diodes and capacitors. Resistor bands and capacitor markings follow edited values. Values without an exact band or small-capacitor body code retain their numeric labels. The diode stripe marks pin 1 (cathode), and the polarized capacitor stripe marks pin 2 (negative). The printed 16 V capacitor marking is artwork only.
+- Transistor designations share a top-down TO-92 package view with numbered contacts and designation-specific terminal labels. Connections follow the existing physical pin numbers when switching views or rotating. Designation changes that would alter the terminal layout or schematic symbol are disabled for wired parts and parts with imported graphics. The library transistor schematic artwork depends on the locally installed KiCad symbols.
 
 ### Workbench wire colours
 
@@ -157,7 +162,9 @@ The application opens directly into the Circuit Workbench. Users can place compo
 | MAN74A | Common-cathode digit with independently wired segments and decimal point |
 | MAN72A | Common-anode digit with independently wired segments and left decimal point |
 | 1N4148 | Simplified digital forward-conduction model |
-| 2N3904 | Simplified digital NPN low-side switch |
+| 2N3904 | Digital NPN low-side switch and limited grounded-emitter DC approximation |
+| BC547B | onsemi BC547BG, digital NPN low-side switch and separate limited DC approximation |
+| 2N3906 | onsemi PNP, ideal active-LOW digital high-side switch |
 | R_Small | Resistor symbol, editable Ω/kΩ/MΩ value, weak digital signal transfer |
 
 The component library includes single-row vertical 2.54 mm pin headers with 2, 3, or 8 independent contacts. KiCad import recognizes matching footprints on the corresponding `Connector:Conn_01xNN_Pin` or `Connector_Generic:Conn_01xNN` schematic symbols.
@@ -263,11 +270,65 @@ New files save the selected power mode. Older version-1 files reopen in Explicit
 
 ### Discrete diode and transistor DC model
 
-- Mixed circuits containing 1N4148 diodes, 2N3904 grounded-emitter stages and resistors can resolve a DC operating point. The model balances resistor and junction currents and approximates transistor gain and saturation. Logic sources are ideal 0 V/5 V. The digital LED reports HIGH at or above 2.0 V, LOW at or below 0.8 V, and X between those thresholds.
-- The reference two-input diode AND with two transistor stages and 10 kΩ resistors lights the LED only when both inputs are HIGH. Scope probes on supported nodes show the DC voltage.
-- The model is limited to small (up to 32 nodes), resistively referenced regions with supported ideal drivers. It leaves other discrete circuits on the existing digital models. Diode and transistor parameters are nominal approximations. Transient capacitance, switching delays, and device variation are outside this model.
+The onsemi 2N3904 uses TO-92 case 135AN, with pins 1 emitter, 2 base and 3 collector from left to right facing the flat side with leads down. The simulator uses two paths.
+
+- **Digital** — A LOW base releases the collector. A HIGH base and LOW emitter drive it LOW. Other states drive X. A simple resistive pull-up and base-resistor stage uses this path, so its logic state does not imply a measured saturation voltage or base current.
+- **DC** — A connected region qualifies with a physical LED (LED3mm) or a combination of a 1N4148 and a supported NPN transistor. The discrete pass requires at most 32 nodes, compatible ideal 0 V/5 V drivers, emitters fixed at 0 V and a resistive path from every unknown node to an ideal driver. An ineligible region or failed solve retains digital evaluation. The presence of a switched-connectivity component such as CD4051 bypasses the discrete DC pass. A scope probe can show solved DC voltage. The solver classifies voltages at or below 0.8 V as LOW, at or above 2.0 V as HIGH, and those between as X.
+- **DC approximation** — The base current uses a 0.68 V knee and a 50 Ω slope resistance, clipped at zero. The collector law blends 100 times the base current (dimensionless multiplier) with the positive collector-emitter voltage divided by 20 Ω. All four values are solver inputs with undocumented derivation. The static model bounds trial voltages to 0–5 V and omits leakage, reverse conduction, breakdown, capacitance, charge storage, switching time, temperature, self-heating and device-rating enforcement.
+
+The [onsemi 2N3904/D datasheet, October 2024, Rev. 3, pp. 1–2](https://www.onsemi.com/pdf/datasheet/2n3904-d.pdf) specifies the following on-characteristics at 25 °C for pulses up to 300 µs at up to 2% duty cycle. The simulator uses static resistive fixtures at the same terminal operating points. Tests characterize the current implementation and keep the datasheet comparison separate.
+
+| Condition | onsemi limit | ChipSim DC approximation |
+| --- | --- | --- |
+| 10 mA collector, 1 V collector-emitter | DC gain 100–300 | 80, below minimum |
+| 10 mA collector, 1 mA base | VCE(sat) ≤ 0.20 V, VBE(sat) 0.65–0.85 V | 0.222 V and 0.730 V, with VCE above maximum |
+| 50 mA collector, 5 mA base | VCE(sat) ≤ 0.30 V, VBE(sat) ≤ 0.95 V | 1.111 V and 0.930 V, with VCE above maximum |
+
+The existing 5 V diode AND and two-transistor circuit is a separate integration fixture with 10 kΩ resistors. It lights the logic LED only when both inputs are HIGH.
+
+### BC547B transistor designation
+
+The Workbench's Transistor Properties offers **BC547B**, based on the onsemi **BC547BG** B-grade part with straight leads, TO-92 case 29, style 17. Pins are **1 collector, 2 base, 3 emitter**. Looking down onto the package with its flat edge nearest you, the physical view reads C–B–E from left to right. Facing the flat side with the leads down gives the same lead order. KiCad's `Transistor_BJT:BC547` C–B–E symbol imports as the B grade, as does an explicit `Transistor_BJT:BC547B` symbol. The symbol and package rotate with their existing numbered endpoints. Designation changes that would swap collector and emitter are blocked on wired parts and parts with imported symbol graphics. Existing 2N3904 archives retain their E–B–C pinout and default designation. [onsemi BC546/D, August 2021, Rev. 8, pp. 1–2 and ordering/package drawings](https://www.onsemi.com/pub/Collateral/BC546-D.PDF)
+
+BC547B reuses the ideal digital switch and the DC eligibility and fallback above. Its limited DC approximation uses separate solver inputs. The dimensionless multiplier of 290 follows the typical B-grade gain at 2 mA and VCE = 5 V. The clipped base law uses an empirical 0.675 V knee and a 50 Ω slope chosen together to give about 0.675 V at that gain point and 0.700 V at 0.5 mA base drive. The 5 Ω collector slope is a fitting value that keeps both forced-gain-20 points below their voltage maxima. The model makes saturation voltage proportional to collector current at a fixed forced gain, so it cannot reproduce both typical saturation voltages with one slope.
+
+| Condition at 25 °C | onsemi data | ChipSim DC approximation |
+| --- | --- | --- |
+| 2 mA collector, VCE = 5 V | Gain 200–450, typical 290. VBE(on) 0.55–0.70 V | Gain 289.4 and VBE 0.675 V. The circuit test uses 4.99 V with a 10 mV sense drop. |
+| 10 mA collector, 0.5 mA base | VCE(sat) typical 0.09 V, maximum 0.25 V. VBE(sat) typical 0.70 V. | VCE 0.054 V and VBE 0.700 V |
+| 100 mA collector, 5 mA base | VCE(sat) typical 0.20 V, maximum 0.60 V | VCE 0.537 V. This is a boundary check at the device's continuous current rating. |
+
+These checks cover static grounded-emitter switching in eligible 0–5 V regions. The collector law overestimates typical gain at the 10 µA and 100 mA active-region datasheet points (about 290 vs 150 and 261 vs 180, respectively, at 5 V). Gain variation with current, reverse bias, leakage, breakdown, switching transients, thermal behavior and rating enforcement are outside the approximation. Use the model for basic switching experiments. Its numerical checks cover the listed bias points.
+
+### 2N3906 transistor designation
+
+The model represents the onsemi **2N3906**, unsuffixed straight-lead bulk part in **TO-92 case 29, style 1**. Pins are **1 emitter, 2 base, 3 collector** from left to right facing the flat side with the leads down. In ChipSim’s top-down TO-92 view the flat edge is nearest the viewer and the leads read E–B–C. The KiCad `Transistor_BJT:2N3906` symbol uses the same numbered roles and its emitter arrow points toward the base. See the pin and package drawings and ordering table. [onsemi 2N3906/D, February 2010, Rev. 4, pp. 1–3 and case drawing](https://www.onsemi.com/pdf/datasheet/2n3906-d.pdf)
+
+Define VXY = VX − VY and take current entering a pin as positive. In forward conduction a PNP emitter is above its base, so VEB is positive and conventional current enters E and leaves B and C. In forward active operation the collector is below the base. In saturation both emitter–base and collector–base junctions are forward biased and the collector approaches the emitter voltage. ChipSim implements only the digital endpoints for an ideal HIGH emitter in its 0/5 V logic environment.
+
+| Emitter | Base | Collector drive |
+| --- | --- | --- |
+| HIGH | HIGH | High impedance, representing cutoff |
+| HIGH | LOW | Ideal HIGH, representing an asserted high-side switch |
+| Any other input combination | | X |
+
+With a pull-down from collector to ground, the digital switching fixture expects exactly HIGH → LOW → HIGH as the base changes LOW → HIGH → LOW. Additional fixtures check disconnected inputs and confirm that a physical LED on the collector does not produce an analog solution on that node. Use a Logic LED or logic probe to observe switching.
+
+The existing DC solver requires an emitter fixed at 0 V and stamps NPN current from base and collector into the emitter. PNP active-region gain, base current and saturation voltage require a separate solver model and review. A region that touches the digital PNP collector stays on the digital path, so an asserted collector does not masquerade as a DC source for a physical LED. There are no fitted PNP analog inputs, leakage, breakdown, rating checks, capacitance, thermal effects or switching delays.
+
+The following datasheet values are reference data only. On-characteristics use 25 °C ambient and pulses of at most 300 µs and 2% duty cycle. Voltage and current limits are expressed as magnitudes for the PNP device.
+
+| Parameter | onsemi datasheet value |
+| --- | --- |
+| Absolute maximum voltage magnitudes | 40 V collector–emitter, 40 V collector–base, 5 V reverse emitter–base |
+| Absolute maximum continuous collector current magnitude | 200 mA |
+| DC gain at 10 mA collector current and 1 V collector–emitter magnitude | 100–300, dimensionless |
+| Saturation at 10 mA collector and 1 mA base current magnitudes | Collector–emitter maximum 0.25 V, emitter–base 0.65–0.85 V |
+| Saturation at 50 mA collector and 5 mA base current magnitudes | Collector–emitter maximum 0.40 V, emitter–base maximum 0.95 V |
 
 ## 6. Verification and Current Milestone
+
+On 25 November 2026, the macOS build and full Xcode suite passed 189 tests across 216 executions, with zero failures or skips. The suite covered clock sources and edge handling, navigation, axial markings and pin geometry, TO-92 pin mapping and rotation, archive compatibility, 2N3904 and BC547B switching and DC fixtures, 2N3906 digital switching and DC isolation, and all four input combinations of the diode–transistor AND fixture. The app icon was verified in the built bundle. The suite did not include a manual visual or pointer-interaction pass.
 
 On 21 November 2026 the macOS build and full Xcode suite passed with the grid-aligned pin geometry. Added coverage checks the library’s pin identity and grid positions through all four rotations, the CD4510 and CD40106 pin mapping, zoomed hit targets from 25–400%, crossing and marker visibility, imported mirrored pin positions and coincident pin contacts, and preservation of explicit bends and electrical connections across move, rotation, save/open and undo. Native checks wired the reference symbols by mouse at 25%, added a junction at 400%, and verified marker changes and continued connectivity when rotating and dragging the inverter.
 

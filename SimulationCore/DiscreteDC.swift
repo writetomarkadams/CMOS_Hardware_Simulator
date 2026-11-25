@@ -4,7 +4,7 @@ import Foundation
 /// transistor networks. The digital engine still handles clocks and gates.
 struct DiscreteDC {
     private struct Device {
-        enum Kind { case resistor(Double), diode, led, transistor }
+        enum Kind { case resistor(Double), diode, led, transistor(TransistorDefinition.NPNParameters) }
         let component: any LogicComponent
         let kind: Kind
         let nodes: [Int]
@@ -12,24 +12,38 @@ struct DiscreteDC {
 
     static func apply(components: [any LogicComponent], nets: [Net]) -> Set<ObjectIdentifier> {
         let hasLED = components.contains { $0 is LED3mm }
-        let hasLegacyNetwork = components.contains { $0 is NPN2N3904 } && components.contains { $0 is Diode1N4148 }
+        let hasLegacyNetwork = components.contains { $0 is Transistor } && components.contains { $0 is Diode1N4148 }
         guard hasLED || hasLegacyNetwork else { return [] }
         var byPin: [ObjectIdentifier: Int] = [:]
         for (index, net) in nets.enumerated() {
             for pin in net.pins { byPin[ObjectIdentifier(pin)] = index }
         }
+        var digitalCollectors: Set<Int> = []
         var regions: [(nodes: Set<Int>, devices: [Device])] = []
         for component in components {
             let kind: Device.Kind
-            switch component {
-            case let resistor as Resistor where !resistor.isTimingElement:
-                kind = .resistor(resistor.value * resistor.unit.multiplier)
-            case let diode as Diode1N4148 where !diode.isTimingElement: kind = .diode
-            case is LED3mm: kind = .led
-            case is NPN2N3904: kind = .transistor
-            default: continue
+            let pins: [Pin]
+            if let transistor = component as? Transistor {
+                switch transistor.definition.model {
+                case .digitalHighSidePNP:
+                    if let collector = byPin[ObjectIdentifier(transistor.pin(.collector))] {
+                        digitalCollectors.insert(collector)
+                    }
+                    continue
+                case .groundedNPN(let parameters):
+                    kind = .transistor(parameters)
+                    pins = [transistor.pin(.emitter), transistor.pin(.base), transistor.pin(.collector)]
+                }
+            } else {
+                switch component {
+                case let resistor as Resistor where !resistor.isTimingElement:
+                    kind = .resistor(resistor.value * resistor.unit.multiplier)
+                case let diode as Diode1N4148 where !diode.isTimingElement: kind = .diode
+                case is LED3mm: kind = .led
+                default: continue
+                }
+                pins = component.pins.values.sorted { $0.number < $1.number }
             }
-            let pins = component.pins.values.sorted { $0.number < $1.number }
             let nodes = pins.compactMap { byPin[ObjectIdentifier($0)] }
             guard nodes.count == pins.count else { continue }
             let device = Device(component: component, kind: kind, nodes: nodes)
@@ -48,7 +62,9 @@ struct DiscreteDC {
         }
 
         var modeled: Set<ObjectIdentifier> = []
-        for (_, devices) in regions {
+        for (nodes, devices) in regions {
+            // A digital-only collector cannot serve as a DC voltage source.
+            guard nodes.isDisjoint(with: digitalCollectors) else { continue }
             let hasLED = devices.contains { if case .led = $0.kind { true } else { false } }
             let hasLegacyNetwork = devices.contains { if case .diode = $0.kind { true } else { false } } &&
                 devices.contains { if case .transistor = $0.kind { true } else { false } }
@@ -113,12 +129,12 @@ struct DiscreteDC {
                 case .led:
                     let milliamps = max(0, (voltage(b) - voltage(a) - LED3mm.forwardVoltage) / LED3mm.dynamicResistanceKilohms)
                     current(milliamps, from: b, to: a)
-                case .transistor:
+                case .transistor(let parameters):
                     let collector = device.nodes[2]
-                    let baseCurrent = max(0, (voltage(b) - voltage(a) - 0.68) / 0.05)
+                    let baseCurrent = max(0, (voltage(b) - voltage(a) - parameters.baseKnee) / parameters.baseResistanceKilohms)
                     current(baseCurrent, from: b, to: a)
-                    let activeCurrent = 100 * baseCurrent
-                    let saturationCurrent = max(0, (voltage(collector) - voltage(a)) / 0.02)
+                    let activeCurrent = parameters.gain * baseCurrent
+                    let saturationCurrent = max(0, (voltage(collector) - voltage(a)) / parameters.saturationResistanceKilohms)
                     // Smoothly limit the gain-controlled current by collector voltage.
                     let total = activeCurrent + saturationCurrent
                     let collectorCurrent = total > 0 ? activeCurrent * saturationCurrent / total : 0

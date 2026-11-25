@@ -49,6 +49,7 @@ struct WorkbenchView: View {
 
     @State private var editingOscillator: WorkbenchPart?
     @State private var editingResistance: Resistor?
+    @State private var editingTransistor: WorkbenchPart?
     @State private var editingCapacitance: Capacitor?
     @State private var camera = WorkbenchViewport()
     @State private var circuitBounds: CGRect?
@@ -143,6 +144,11 @@ struct WorkbenchView: View {
         }
         .sheet(isPresented: $showingLibrary) {
             ComponentLibraryView(bench: bench, placeNewPart: placeNewPart)
+        }
+        .sheet(item: $editingTransistor) { part in
+            if let transistor = part.component as? Transistor {
+                TransistorProperties(partID: part.id, bench: bench, designation: transistor.designation)
+            }
         }
         .sheet(item: $editingCapacitance) { capacitor in
             CapacitanceEditor(capacitor: capacitor) { value in
@@ -502,7 +508,7 @@ struct WorkbenchView: View {
     }
 
     private var commands: WorkbenchActions? {
-        guard !showingLibrary, editingResistance == nil, editingCapacitance == nil, editingOscillator == nil,
+        guard !showingLibrary, editingResistance == nil, editingCapacitance == nil, editingTransistor == nil, editingOscillator == nil,
               importFile == nil else { return nil }
         return WorkbenchActions(
             open: { chooseFile(importing: false) }, save: { saveCircuit() }, saveAs: { saveCircuit(saveAs: true) },
@@ -838,7 +844,7 @@ struct WorkbenchView: View {
 
     private func handleEditShortcut(_ key: String) -> Bool {
         guard canvasFocused, !placingProbe, !showingLibrary, editingResistance == nil,
-              editingCapacitance == nil, editingOscillator == nil, importFile == nil else { return false }
+              editingCapacitance == nil, editingTransistor == nil, editingOscillator == nil, importFile == nil else { return false }
         switch key {
         case "c":
             guard canCopySelection, let data = try? bench.copyParts(selectedParts).encoded() else { return false }
@@ -954,11 +960,14 @@ struct WorkbenchView: View {
         let explicitNoConnects = Set(bench.parts.flatMap { part in
             (part.importedSymbol?.noConnectPins ?? []).map { WorkbenchTerminal(partID: part.id, pinNumber: $0) }
         })
+        let packageIDs = bench.componentAppearance == .physicalDIP
+            ? Set(bench.parts.filter { $0.component is Transistor }.map(\.id)) : []
         return Canvas { context, _ in
             var context = context
             context.translateBy(x: -worldOrigin.x, y: -worldOrigin.y)
             for (terminal, point) in locations {
-                if bench.showsOpenPinMarker(terminal, explicitNoConnect: explicitNoConnects.contains(terminal)) {
+                if !packageIDs.contains(terminal.partID),
+                   bench.showsOpenPinMarker(terminal, explicitNoConnect: explicitNoConnects.contains(terminal)) {
                     let ring = CGRect(x: point.x - 2.5, y: point.y - 2.5, width: 5, height: 5)
                     context.stroke(Path(ellipseIn: ring), with: .color(Color(red: 0.65, green: 0, blue: 0)), lineWidth: 1)
                 }
@@ -1017,6 +1026,21 @@ struct WorkbenchView: View {
                 Canvas { context, _ in
                     var context = context
                     context.translateBy(x: -worldOrigin.x, y: -worldOrigin.y)
+                    // Pads are inside the TO-92 body, so wires must paint over its housing.
+                    if bench.componentAppearance == .physicalDIP {
+                        for part in bench.parts {
+                            guard let package = TO92Package(part: part) else { continue }
+                            let turns = bench.rotations[part.id, default: 0]
+                            let geometry = SchematicPartGeometry(part: part, turns: turns, appearance: .physicalDIP)
+                            let origin = geometry.canvasOrigin(at: displayedPosition(of: part.id),
+                                                               imported: part.importedSymbol != nil)
+                            var housingContext = context
+                            housingContext.translateBy(x: origin.x, y: origin.y)
+                            housingContext.rotate(by: .degrees(Double(turns * 90)))
+                            housingContext.translateBy(x: -package.size.width / 2, y: -package.size.height / 2)
+                            package.drawHousing(in: housingContext, isSelected: selectedParts.contains(part.id))
+                        }
+                    }
                     for route in routes {
                         let selected = route.wire.id == bench.selectedWireID
                         if selected {
@@ -1438,11 +1462,20 @@ struct WorkbenchView: View {
 
     @ViewBuilder
     private func partCard(_ part: WorkbenchPart, geometry: SchematicPartGeometry) -> some View {
-        if let drawing = part.importedSymbol {
+        if let package = geometry.to92Package, let transistor = part.component as? Transistor {
+            TO92PackageView(package: package, part: part, transistor: transistor, bench: bench,
+                            select: { selectPart(part.id) },
+                            rotate: rotationAction(for: part.id), editProperties: { editingTransistor = part })
+                .accessibilityAddTraits(selectedParts.contains(part.id) ? .isSelected : [])
+                .transformAnchorPreference(key: CanvasBounds.self, value: .bounds) { bounds, anchor in
+                    bounds[.part(part.id)] = anchor
+                }
+        } else if let drawing = part.importedSymbol {
             ImportedSymbolView(drawing: drawing, part: part, bench: bench, isSelected: selectedParts.contains(part.id),
                                select: { selectPart(part.id) }, rotate: rotationAction(for: part.id),
                                editResistance: { editingResistance = part.component as? Resistor },
-                               editCapacitance: { editingCapacitance = part.component as? Capacitor })
+                               editCapacitance: { editingCapacitance = part.component as? Capacitor },
+                               editProperties: part.component is Transistor ? { editingTransistor = part } : nil)
         } else {
             standardPartCard(part, packageLayout: geometry.packageLayout)
         }
@@ -1471,6 +1504,7 @@ struct WorkbenchView: View {
                                     rotate: rotate,
                                     editResistance: (part.component as? Resistor).map { resistor in { editingResistance = resistor } },
                                     editCapacitance: (part.component as? Capacitor).map { capacitor in { editingCapacitance = capacitor } },
+                                    editProperties: part.component is Transistor ? { editingTransistor = part } : nil,
                                     editFrequency: part.component is CXO_DIP8 ? { editingOscillator = part } : nil)
             } else if let source = part.component as? WorkbenchSwitch {
                 LogicSwitchSymbol(partID: part.id, source: source, bench: bench, isSelected: isSelected, select: select, rotate: rotate)

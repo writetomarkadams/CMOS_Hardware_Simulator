@@ -906,7 +906,7 @@ extension WorkbenchTests {
     func groundedTransistorSwitch() {
         let bench = Workbench()
         let baseSwitch = WorkbenchSwitch()
-        let transistor = NPN2N3904()
+        let transistor = Transistor()
         bench.add("Ground", component: WorkbenchSwitch())
         bench.add("Base", component: baseSwitch)
         bench.add("2N3904", component: transistor)

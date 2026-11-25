@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		A00100000000000000000001 /* CMOS4000SimulatorApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000001 /* CMOS4000SimulatorApp.swift */; };
+		A00100000000000000000002 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A00200000000000000000003 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -24,6 +25,7 @@
 		32ADFC8030AA90A700460C3B /* CMOS4000SimulatorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CMOS4000SimulatorTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		A00200000000000000000001 /* CMOS4000SimulatorApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CMOS4000SimulatorApp.swift; sourceTree = "<group>"; };
 		A00200000000000000000002 /* CMOS4000Simulator.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CMOS4000Simulator.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00200000000000000000003 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -71,6 +73,7 @@
 			isa = PBXGroup;
 			children = (
 				A00200000000000000000001 /* CMOS4000SimulatorApp.swift */,
+				A00200000000000000000003 /* Assets.xcassets */,
 				A00300000000000000000001 /* SimulationCore */,
 				A00300000000000000000002 /* Netlist */,
 				A00300000000000000000003 /* Interface */,
@@ -183,6 +186,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A00100000000000000000002 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -387,6 +391,7 @@
 		A00900000000000000000003 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_IDENTITY = "-";
 				DEAD_CODE_STRIPPING = YES;
@@ -399,6 +404,7 @@
 		A00900000000000000000004 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_IDENTITY = "-";
 				DEAD_CODE_STRIPPING = YES;

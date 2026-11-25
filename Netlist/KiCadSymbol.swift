@@ -37,18 +37,16 @@ struct KiCadSymbol {
         return root
     }()
 
-    static let npn2N3904: Self? = {
-        let path = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols/Transistor_BJT.kicad_sym"
-        guard let text = try? String(contentsOfFile: path, encoding: .utf8),
-              let library = KiCadExpression.parse(text),
-              let part = library.children.first(where: { $0[0] == "symbol" && $0[1] == "2N3904" }),
-              let parentName = part.child("extends")?[1],
-              let parent = library.children.first(where: { $0[0] == "symbol" && $0[1] == parentName }),
-              let circle = parent.children.lazy.compactMap({ $0.child("circle") }).first,
+    static let npn2N3904 = transistorSymbol("2N3904")
+    static let bc547 = transistorSymbol("BC547")
+    static let pnp2N3906 = transistorSymbol("2N3906")
+
+    private static func transistorSymbol(_ name: String) -> Self? {
+        guard let elements = deviceElements(name, library: "Transistor_BJT"),
+              let circle = elements.first(where: { $0[0] == "circle" }),
               let center = circle.child("center")?.point,
               let radius = circle.child("radius")?[1].flatMap(Double.init) else { return nil }
 
-        let elements = parent.children.flatMap(\.children)
         let markings = elements.filter { $0[0] == "polyline" }.compactMap {
             $0.child("pts")?.children.compactMap(\.point)
         }
@@ -56,7 +54,7 @@ struct KiCadSymbol {
                           width: radius * 2, height: radius * 2)
         return Self(pins: elements, body: body, isCircular: true, markings: markings,
                     pinNumbers: [1, 2, 3])
-    }()
+    }
 
     static let capacitors: [CapacitorKind: Self] = Dictionary(uniqueKeysWithValues:
         CapacitorKind.allCases.compactMap { kind -> (CapacitorKind, Self)? in
@@ -93,6 +91,25 @@ struct KiCadSymbol {
         return Self(pins: elements, body: body, pinNumbers: [1, 2])
     }()
 
+    static let axialResistor = axialPackage(halfBodyWidth: 2.413)
+    static let axialSmallCapacitor = axialPackage(halfBodyWidth: 1.651)
+
+    static let axialPolarizedCapacitor = axialPackage(halfBodyWidth: 2.667, halfBodyHeight: 1.27)
+
+    private static func axialPackage(halfBodyWidth: CGFloat, halfBodyHeight: CGFloat = 1.016) -> Self {
+        let halfSpan: CGFloat = 3.81
+        let leadLength = halfSpan - halfBodyWidth
+        return Self(
+            body: CGRect(x: -halfBodyWidth, y: -halfBodyHeight, width: 2 * halfBodyWidth, height: 2 * halfBodyHeight),
+            terminals: [
+                Terminal(id: 1, name: "", style: "line", position: CGPoint(x: -halfSpan, y: 0),
+                         inward: CGVector(dx: 1, dy: 0), length: leadLength),
+                Terminal(id: 2, name: "", style: "line", position: CGPoint(x: halfSpan, y: 0),
+                         inward: CGVector(dx: -1, dy: 0), length: leadLength)
+            ]
+        )
+    }
+
     static let led3mm = Self(
         body: CGRect(x: -2.54, y: -5.08, width: 5.08, height: 7.62),
         markings: [
@@ -112,8 +129,31 @@ struct KiCadSymbol {
         ]
     )
 
-    static let diode1N4148: Self? = {
-        guard let elements = deviceElements("1N4148", library: "Diode") else { return nil }
+    static let diode1N4148: Self = {
+        if let elements = deviceElements("1N4148", library: "Diode"),
+           let symbol = diodeSymbol(elements) {
+            return symbol
+        }
+
+        // Mirror the library symbol when KiCad is unavailable so both appearances share the same pins.
+        return Self(
+            body: CGRect(x: -1.27, y: -1.27, width: 2.54, height: 2.54),
+            markings: [
+                [CGPoint(x: -1.27, y: -1.27), CGPoint(x: -1.27, y: 1.27)],
+                [CGPoint(x: 1.27, y: -1.27), CGPoint(x: 1.27, y: 1.27),
+                 CGPoint(x: -1.27, y: 0), CGPoint(x: 1.27, y: -1.27)],
+                [CGPoint(x: 1.27, y: 0), CGPoint(x: -1.27, y: 0)]
+            ],
+            terminals: [
+                Terminal(id: 1, name: "K", style: "line", position: CGPoint(x: -3.81, y: 0),
+                         inward: CGVector(dx: 1, dy: 0), length: 2.54),
+                Terminal(id: 2, name: "A", style: "line", position: CGPoint(x: 3.81, y: 0),
+                         inward: CGVector(dx: -1, dy: 0), length: 2.54)
+            ]
+        )
+    }()
+
+    private static func diodeSymbol(_ elements: [KiCadExpression]) -> Self? {
         let markings = elements.filter { $0[0] == "polyline" }.compactMap {
             $0.child("pts")?.children.compactMap(\.point)
         }
@@ -123,7 +163,7 @@ struct KiCadSymbol {
 
         let body = CGRect(x: left, y: top, width: right - left, height: bottom - top)
         return Self(pins: elements, body: body, markings: markings, pinNumbers: [1, 2])
-    }()
+    }
 
     private static func deviceElements(_ name: String, library: String) -> [KiCadExpression]? {
         let path = "/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols/\(library).kicad_sym"

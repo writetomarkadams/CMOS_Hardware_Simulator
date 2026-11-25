@@ -16,6 +16,7 @@ struct SchematicSymbolView: View {
     let rotate: (Int) -> Void
     var editResistance: (() -> Void)? = nil
     var editCapacitance: (() -> Void)? = nil
+    var editProperties: (() -> Void)? = nil
     var editFrequency: (() -> Void)? = nil
     private var capacitor: Capacitor? { part.component as? Capacitor }
 
@@ -23,6 +24,9 @@ struct SchematicSymbolView: View {
     private var display: SevenSegmentDisplay? { part.component as? SevenSegmentDisplay }
     private var usesMAN74AFace: Bool {
         bench.componentAppearance == .physicalDIP && part.component is MAN74A
+    }
+    private var usesAxialDiode: Bool {
+        bench.componentAppearance == .physicalDIP && part.component is Diode1N4148
     }
     private var isPinHeader: Bool { part.component is PinHeader }
     private var isDiode: Bool { part.component is Diode1N4148 || part.component is LED3mm }
@@ -33,6 +37,7 @@ struct SchematicSymbolView: View {
     private var isDiscrete: Bool { symbol.isCircular || resistor != nil || capacitor != nil || isDiode }
 
     private var valueLabel: String {
+        if let transistor = part.component as? Transistor { return transistor.designation.rawValue }
         if let capacitor { return "\(capacitor.value.formatted()) \(capacitor.kind.unit)" }
         if let resistor {
             return "\(resistor.value.formatted()) \(resistor.unit.rawValue)"
@@ -46,6 +51,9 @@ struct SchematicSymbolView: View {
     private var labelPosition: CGPoint {
         if isPinHeader {
             return point(CGPoint(x: symbol.body.minX, y: symbol.body.minY))
+        }
+        if bench.componentAppearance == .physicalDIP && part.axialPackageSymbol != nil {
+            return CGPoint(x: bodyCenter.x, y: bodyCenter.y + bodySize.height / 2 + 11)
         }
         if resistor != nil || capacitor != nil || symbol.isCircular {
             return CGPoint(x: bodyCenter.x + 42, y: bodyCenter.y)
@@ -63,7 +71,9 @@ struct SchematicSymbolView: View {
     }
 
     private let scale = SchematicSymbolGeometry.scale
-    private var geometry: SchematicSymbolGeometry { SchematicSymbolGeometry(symbol: symbol, part: part) }
+    private var geometry: SchematicSymbolGeometry {
+        SchematicSymbolGeometry(symbol: symbol, part: part, appearance: bench.componentAppearance)
+    }
     private let bodyFill = Color(red: 1, green: 1, blue: 0.76)
     private let outline = Color(red: 0.65, green: 0, blue: 0)
     private let labelInk = Color(red: 0, green: 0.35, blue: 0.36)
@@ -77,8 +87,17 @@ struct SchematicSymbolView: View {
     }
 
     var body: some View {
+        let artwork = AxialArtwork(part: part, appearance: bench.componentAppearance)
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
+                if let artwork,
+                   let first = symbol.terminals.first(where: { $0.id == 1 }),
+                   let second = symbol.terminals.first(where: { $0.id == 2 }) {
+                    artwork.draw(in: context, first: geometry.endpoint(first), second: geometry.endpoint(second),
+                                 bench: bench, partID: partID, isSelected: isSelected)
+                    return
+                }
+
                 let outlinePath = symbolOutline()
                 if isSelected && !isPinHeader && !usesMAN74AFace {
                     context.fill(outlinePath, with: .color(.schematicSelectionFill))
@@ -140,6 +159,7 @@ struct SchematicSymbolView: View {
                     if let editResistance {
                         Button("Set Resistance…", action: editResistance)
                     }
+                    if let editProperties { Button("Properties…", action: editProperties) }
                     if let editFrequency { Button("Set Frequency…", action: editFrequency) }
                     Button("Remove Part", role: .destructive) { bench.removePart(partID) }
                 }
@@ -156,7 +176,7 @@ struct SchematicSymbolView: View {
             VStack(spacing: 1) {
                 Text(part.reference ?? "U\(partID)")
                     .fontWeight(.semibold)
-                if !isPinHeader && !isXORGate { Text(valueLabel) }
+                if !isPinHeader && !isXORGate && !usesAxialDiode { Text(valueLabel) }
                 if let oscillator = part.component as? CXO_DIP8 {
                     Text(bench.clockFrequency(for: partID, source: oscillator).label)
                 }
@@ -274,7 +294,7 @@ struct SchematicSymbolView: View {
                 .allowsHitTesting(false)
                 .rotationEffect(.degrees(isPinHeader ? -90 : 0))
                 .position(x: (endpoint.x + inner.x) / 2 + (isPinHeader ? -7 : pin.inward.dx == 0 ? 10 : 0),
-                          y: (endpoint.y + inner.y) / 2 - (pin.inward.dy == 0 ? 7 : 0))
+                          y: (endpoint.y + inner.y) / 2 - (usesAxialDiode ? 13 : pin.inward.dy == 0 ? 7 : 0))
                 .accessibilityHidden(true)
 
             SchematicPinButton(terminal: terminal, bench: bench,
@@ -320,6 +340,187 @@ struct SchematicSymbolView: View {
         }
     }
 
+}
+
+enum AxialArtwork {
+    case diode
+    case resistor([ResistanceBand])
+    case smallCapacitor(marking: String?)
+    case polarizedCapacitor(marking: String)
+
+    init?(part: WorkbenchPart, appearance: ComponentAppearance) {
+        guard appearance == .physicalDIP else { return nil }
+        switch part.component {
+        case is Diode1N4148: self = .diode
+        case let resistor as Resistor:
+            self = .resistor(ResistanceBand.bands(for: resistor.value * resistor.unit.multiplier))
+        case let capacitor as Capacitor:
+            switch capacitor.kind {
+            case .small:
+                self = .smallCapacitor(marking: Self.capacitorMarking(nanofarads: capacitor.value))
+            case .polarized:
+                let format = FloatingPointFormatStyle<Double>.number.precision(.significantDigits(1...6))
+                let value = capacitor.value
+                let marking = (0.01..<10_000).contains(value)
+                    ? value.formatted(format)
+                    : value.formatted(format.notation(.scientific))
+                self = .polarizedCapacitor(marking: "\(marking) \(capacitor.kind.unit)")
+            }
+        default: return nil
+        }
+    }
+
+    private static func capacitorMarking(nanofarads: Double) -> String? {
+        let picofarads = nanofarads * 1_000
+        for exponent in 0...9 {
+            let scaled = picofarads / pow(10, Double(exponent))
+            let digits = scaled.rounded()
+            guard (10...99).contains(digits), abs(scaled - digits) <= 4 * digits.ulp else { continue }
+            return "\(Int(digits))\(exponent)"
+        }
+        // Values below 10 pF can use a single digit when they are whole picofarads.
+        let whole = picofarads.rounded()
+        guard (1...9).contains(whole), abs(picofarads - whole) <= 4 * whole.ulp else { return nil }
+        return String(Int(whole))
+    }
+
+    func draw(in context: GraphicsContext, first: CGPoint, second: CGPoint,
+              bench: Workbench, partID: Int, isSelected: Bool, noConnectPins: [Int] = []) {
+        let dx = second.x - first.x
+        let dy = second.y - first.y
+        let span = hypot(dx, dy)
+        guard span > 0 else { return }
+
+        // Draw from pin 1 to pin 2 so the polarity markings follow rotation and imported mirrors.
+        var axial = context
+        axial.translateBy(x: first.x, y: first.y)
+        axial.rotate(by: .radians(atan2(dy, dx)))
+        let unit = span / 60
+        let body: CGRect
+        let cornerRadius: CGFloat
+        switch self {
+        case .polarizedCapacitor:
+            body = CGRect(x: 9 * unit, y: -10 * unit, width: 42 * unit, height: 20 * unit)
+            cornerRadius = 4 * unit
+        case .smallCapacitor:
+            body = CGRect(x: 17 * unit, y: -8 * unit, width: 26 * unit, height: 16 * unit)
+            cornerRadius = 8 * unit
+        default:
+            body = CGRect(x: 11 * unit, y: -8 * unit, width: 38 * unit, height: 16 * unit)
+            cornerRadius = 5 * unit
+        }
+        let housing = Path(roundedRect: body, cornerRadius: cornerRadius)
+        let trims = [1, 2].map { pin -> CGFloat in
+            let terminal = WorkbenchTerminal(partID: partID, pinNumber: pin)
+            return bench.showsOpenPinMarker(terminal, explicitNoConnect: noConnectPins.contains(pin)) ? 2.5 : 0
+        }
+        let leads = Path { path in
+            path.move(to: CGPoint(x: min(trims[0], body.minX), y: 0))
+            path.addLine(to: CGPoint(x: body.midX, y: 0))
+            path.move(to: CGPoint(x: body.midX, y: 0))
+            path.addLine(to: CGPoint(x: max(span - trims[1], body.maxX), y: 0))
+        }
+        if isSelected {
+            axial.stroke(leads, with: .color(.cyan.opacity(0.55)), lineWidth: 7 * unit)
+            axial.stroke(housing, with: .color(.cyan), lineWidth: 4 * unit)
+        }
+        axial.stroke(leads, with: .color(Color(white: 0.22)), lineWidth: 3.5 * unit)
+        axial.stroke(leads, with: .color(Color(white: 0.76)), lineWidth: 2 * unit)
+        var stripes = axial
+        stripes.clip(to: housing)
+        switch self {
+        case .diode:
+            axial.fill(housing, with: .color(Color(red: 1, green: 0.55, blue: 0.22)))
+            stripes.fill(Path(CGRect(x: body.minX + 5 * unit, y: body.minY,
+                                     width: 4 * unit, height: body.height)), with: .color(.black))
+            axial.draw(Text("1N4148").font(.system(size: 7.2 * unit, weight: .bold))
+                .foregroundStyle(Color.black), at: CGPoint(x: body.midX + 4 * unit, y: body.midY))
+        case let .resistor(bands):
+            axial.fill(housing, with: .color(Color(red: 0.90, green: 0.79, blue: 0.61)))
+            let step = 21.5 * unit / CGFloat(max(1, bands.count - 1))
+            let width = (bands.count == 4 ? 3.5 : 4.5) * unit
+            for (index, band) in bands.enumerated() {
+                let center = 19.25 * unit + CGFloat(index) * step
+                let stripe = CGRect(x: center - width / 2, y: body.minY, width: width, height: body.height)
+                stripes.fill(Path(stripe), with: .color(band.color))
+            }
+        case let .polarizedCapacitor(marking):
+            let navy = Color(red: 0.04, green: 0.08, blue: 0.17)
+            axial.fill(housing, with: .linearGradient(
+                Gradient(colors: [navy, Color(red: 0.18, green: 0.25, blue: 0.39), navy]),
+                startPoint: CGPoint(x: body.midX, y: body.maxY),
+                endPoint: CGPoint(x: body.midX, y: body.minY)
+            ))
+            // The stripe is adjacent to pin 2, the negative terminal.
+            let stripe = CGRect(x: body.maxX - 10 * unit, y: body.minY,
+                                width: 7 * unit, height: body.height)
+            stripes.fill(Path(stripe), with: .color(Color(red: 0.82, green: 0.86, blue: 0.91)))
+            let minus = Text("−").font(.system(size: 6.5 * unit, weight: .bold))
+                .foregroundStyle(navy)
+            for offset in [-5.0, 5.0] {
+                axial.draw(minus, at: CGPoint(x: stripe.midX, y: CGFloat(offset) * unit))
+            }
+
+            let printCenter = (body.minX + stripe.minX) / 2
+            let valueText = axial.resolve(Text(marking)
+                .font(.system(size: 7.4 * unit, weight: .bold)).foregroundStyle(Color.white))
+            let textWidth = valueText.measure(in: CGSize(width: CGFloat.infinity, height: CGFloat.infinity)).width
+            let availableWidth = stripe.minX - body.minX - 4 * unit
+            var printContext = axial
+            printContext.translateBy(x: printCenter, y: -4 * unit)
+            let textScale = min(1, availableWidth / textWidth)
+            printContext.scaleBy(x: textScale, y: textScale)
+            printContext.draw(valueText, at: .zero)
+            axial.draw(Text("16 V").font(.system(size: 6.8 * unit, weight: .semibold))
+                .foregroundStyle(Color.white), at: CGPoint(x: printCenter, y: 4.5 * unit))
+        case let .smallCapacitor(marking):
+            axial.fill(housing, with: .color(Color(red: 0.82, green: 0.47, blue: 0.16)))
+            if let marking {
+                axial.draw(Text(marking).font(.system(size: 8.5 * unit, weight: .bold))
+                    .foregroundStyle(Color.black), at: CGPoint(x: body.midX, y: body.midY))
+            }
+        }
+        axial.stroke(housing, with: .color(.black), lineWidth: 1.2 * unit)
+    }
+}
+
+enum ResistanceBand: Int {
+    case silver = -2, gold, black, brown, red, orange, yellow, green, blue, violet, grey, white
+
+    var color: Color {
+        switch self {
+        case .silver: Color(white: 0.74)
+        case .gold: Color(red: 0.72, green: 0.52, blue: 0.12)
+        case .black: .black
+        case .brown: Color(red: 0.38, green: 0.18, blue: 0.09)
+        case .red: Color(red: 0.78, green: 0.10, blue: 0.10)
+        case .orange: Color(red: 0.94, green: 0.35, blue: 0.06)
+        case .yellow: Color(red: 0.97, green: 0.79, blue: 0.12)
+        case .green: Color(red: 0.13, green: 0.50, blue: 0.22)
+        case .blue: Color(red: 0.13, green: 0.31, blue: 0.75)
+        case .violet: Color(red: 0.53, green: 0.24, blue: 0.64)
+        case .grey: Color(white: 0.48)
+        case .white: .white
+        }
+    }
+
+    static func bands(for ohms: Double) -> [Self] {
+        guard ohms.isFinite, ohms > 0 else { return [] }
+
+        // Prefer two significant digits. Allow a third when needed, without rounding the displayed value.
+        for (minimum, maximum) in [(10, 99), (100, 999)] {
+            for multiplier in -2...9 {
+                let scaled = ohms / pow(10, Double(multiplier))
+                let digits = scaled.rounded()
+                guard digits >= Double(minimum), digits <= Double(maximum),
+                      abs(scaled - digits) <= 4 * digits.ulp else { continue }
+                return String(Int(digits)).compactMap { digit in
+                    digit.wholeNumberValue.flatMap(Self.init(rawValue:))
+                } + [Self(rawValue: multiplier)!]
+            }
+        }
+        return []
+    }
 }
 
 func drawSevenSegmentFace(_ display: SevenSegmentDisplay, in context: GraphicsContext,

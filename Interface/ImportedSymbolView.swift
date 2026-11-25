@@ -9,6 +9,7 @@ struct ImportedSymbolView: View {
     let rotate: (Int) -> Void
     let editResistance: () -> Void
     let editCapacitance: () -> Void
+    var editProperties: (() -> Void)? = nil
 
     private let ink = Color(red: 0.65, green: 0, blue: 0)
     private let textInk = Color(red: 0, green: 0.35, blue: 0.36)
@@ -38,7 +39,16 @@ struct ImportedSymbolView: View {
         if let capacitor = part.component as? Capacitor {
             return "\(capacitor.value.formatted()) \(capacitor.kind.unit)"
         }
+        if let transistor = part.component as? Transistor { return transistor.designation.rawValue }
         return drawing.value
+    }
+
+    private var axialPins: (first: CGPoint, second: CGPoint)? {
+        guard let firstPin = drawing.pins.first(where: { $0.id == 1 }),
+              let secondPin = drawing.pins.first(where: { $0.id == 2 }) else { return nil }
+        let first = endpoint(firstPin)
+        let second = endpoint(secondPin)
+        return first == second ? nil : (first, second)
     }
 
     private var schematicDisplay: SevenSegmentDisplay? {
@@ -52,9 +62,17 @@ struct ImportedSymbolView: View {
     }
 
     var body: some View {
+        let artwork = AxialArtwork(part: part, appearance: bench.componentAppearance)
+        let axialPins = artwork == nil ? nil : self.axialPins
         ZStack(alignment: .topLeading) {
             Canvas { context, _ in
-                for graphic in drawing.graphics where displayBody == nil || graphic.fill == "background" {
+                if let artwork, let axialPins {
+                    artwork.draw(in: context, first: axialPins.first, second: axialPins.second,
+                                 bench: bench, partID: part.id, isSelected: isSelected,
+                                 noConnectPins: drawing.noConnectPins)
+                }
+                for graphic in drawing.graphics
+                where axialPins == nil && (displayBody == nil || graphic.fill == "background") {
                     let points = graphic.points.map(point)
                     let path = Path { path in
                         switch graphic.kind {
@@ -89,6 +107,7 @@ struct ImportedSymbolView: View {
                 }
                 for field in drawing.fields ?? [] {
                     if field.key == "Reference" && part.component is WorkbenchPower { continue }
+                    if axialPins != nil, case .diode? = artwork, field.key == "Value" { continue }
                     let offset = CGPoint(x: field.offset.x * drawing.drawingScale - bounds.minX,
                                          y: field.offset.y * drawing.drawingScale - bounds.minY)
                     let text = field.key == "Reference" ? part.reference ?? part.name : value
@@ -108,6 +127,12 @@ struct ImportedSymbolView: View {
                     let dy = length > 0 ? (end.y - original.y) / length : 0
                     let terminal = WorkbenchTerminal(partID: part.id, pinNumber: pin.id)
                     let noConnect = drawing.noConnectPins.contains(pin.id) && !bench.isTerminalConnected(terminal)
+                    if axialPins != nil {
+                        if noConnect {
+                            context.stroke(schematicCross(at: start), with: .color(.blue), lineWidth: 1.3)
+                        }
+                        continue
+                    }
                     let inverted = pin.style.hasPrefix("inverted")
                     let lineEnd = CGPoint(x: end.x - (inverted ? 6 * dx : 0), y: end.y - (inverted ? 6 * dy : 0))
                     var path = Path()
@@ -150,6 +175,7 @@ struct ImportedSymbolView: View {
                     PartRotationCommands(rotate: rotate)
                     if part.component is Resistor { Button("Set Resistance…", action: editResistance) }
                     if part.component is Capacitor { Button("Set Capacitance…", action: editCapacitance) }
+                    if let editProperties { Button("Properties…", action: editProperties) }
                     Button("Remove Part", role: .destructive) { bench.removePart(part.id) }
                 }
                 .transformAnchorPreference(key: CanvasBounds.self, value: .bounds) { anchors, anchor in
@@ -168,7 +194,7 @@ struct ImportedSymbolView: View {
                     .position(x: target.maxX + 8, y: target.minY)
             }
             ForEach(drawing.pins.filter { part.pins[$0.id] != nil }) { pin in
-                terminal(pin, showLabel: !power && !discrete)
+                terminal(pin, showLabel: !power && !discrete && axialPins == nil)
             }
         }
         .frame(width: bounds.width, height: bounds.height)

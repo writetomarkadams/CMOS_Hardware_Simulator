@@ -7,7 +7,7 @@ struct SchematicPinGeometryTests {
     @Test func allLibraryPinsStayDistinctAndOnGridThroughQuarterTurns() {
         let bench = Workbench()
         let standalone: [any LogicComponent] = [
-            CD4510(), CD4060(), NE555(), MAN72A(), MAN74A(), NPN2N3904(), Resistor(), Diode1N4148(),
+            CD4510(), CD4060(), NE555(), MAN72A(), MAN74A(), Transistor(), Resistor(), Diode1N4148(),
             WorkbenchSwitch(), WorkbenchSwitch(showsValue: true), WorkbenchPower(.ground),
             WorkbenchPower(.fiveVolts), WorkbenchClock(), WorkbenchLED(), WorkbenchPullUp()
         ]
@@ -47,6 +47,223 @@ struct SchematicPinGeometryTests {
                 }
             }
         }
+    }
+
+    @Test func axialDiodeKeepsPolarityAndWiredEndpointsAcrossAppearances() throws {
+        let bench = Workbench()
+        bench.add("1N4148", component: Diode1N4148())
+        bench.add("VDD", component: WorkbenchPower(.fiveVolts))
+        bench.add("LED", component: WorkbenchLED())
+        let part = try #require(bench.parts.first)
+        let cathode = WorkbenchTerminal(partID: part.id, pinNumber: 1)
+        let anode = WorkbenchTerminal(partID: part.id, pinNumber: 2)
+        let source = WorkbenchTerminal(partID: 2, pinNumber: 1)
+        let load = WorkbenchTerminal(partID: 3, pinNumber: 1)
+        bench.componentAppearance = .physicalDIP
+        bench.select(source)
+        bench.select(anode)
+        bench.select(cathode)
+        bench.select(load)
+        let cathodeNet = try #require(bench.circuitNet(at: cathode))
+        let anodeNet = try #require(bench.circuitNet(at: anode))
+        let position = CGPoint(x: 47.3, y: 112.8)
+
+        #expect(part.pins[1]?.name == "K")
+        #expect(part.pins[2]?.name == "A")
+        let unrotated = SchematicPartGeometry(part: part, turns: 0, appearance: .physicalDIP)
+        let left = try #require(unrotated.pins[1])
+        let right = try #require(unrotated.pins[2])
+        #expect(right.x - left.x == 6 * WorkbenchWire.gridSpacing)
+        #expect(left.y == right.y)
+        for turns in 0..<4 {
+            let schematic = SchematicPartGeometry(part: part, turns: turns, appearance: .schematic)
+            let physical = SchematicPartGeometry(part: part, turns: turns, appearance: .physicalDIP)
+            for pin in [1, 2] {
+                let point = try #require(physical.location(of: pin, at: position, turns: turns, imported: false))
+                #expect(point == schematic.location(of: pin, at: position, turns: turns, imported: false))
+                #expect(point == WorkbenchWire.snap(point))
+            }
+        }
+
+        bench.rotatePart(part.id, by: 1)
+        bench.componentAppearance = .schematic
+        #expect(bench.circuitNet(at: load) === cathodeNet)
+        #expect(bench.circuitNet(at: source) === anodeNet)
+        #expect(bench.readings[load] == .high)
+
+        let reopened = Workbench()
+        let data = try WorkbenchArchive(bench: bench).encoded()
+        try reopened.open(JSONDecoder().decode(WorkbenchArchive.self, from: data))
+        reopened.componentAppearance = .physicalDIP
+        #expect(reopened.rotations[part.id] == 1)
+        #expect(reopened.readings[load] == .high)
+        let clipboard = try reopened.copyParts([1, 2, 3])
+        let pasted = try reopened.pasteParts(clipboard, by: CGSize(width: 100, height: 100)).sorted()
+        #expect(pasted.count == 3)
+        let diodeID = try #require(pasted.first)
+        let loadID = try #require(pasted.last)
+        let pastedCathode = WorkbenchTerminal(partID: diodeID, pinNumber: 1)
+        let pastedLoad = WorkbenchTerminal(partID: loadID, pinNumber: 1)
+        let pastedNet = try #require(reopened.circuitNet(at: pastedCathode))
+        #expect(reopened.rotations[diodeID] == 1)
+        #expect(reopened.circuitNet(at: pastedLoad) === pastedNet)
+        #expect(reopened.readings[pastedLoad] == .high)
+    }
+
+    @Test func axialResistorBandsFollowEditedValuesAndUnits() throws {
+        let bench = Workbench()
+        let resistor = Resistor()
+        bench.add("R_Small", component: resistor)
+        let part = try #require(bench.parts.first)
+
+        func bands() -> [ResistanceBand]? {
+            guard case let .resistor(bands)? = AxialArtwork(part: part, appearance: .physicalDIP) else { return nil }
+            return bands
+        }
+
+        #expect(bands() == [.yellow, .violet, .brown])
+        bench.setResistance(10, unit: .kilohms, for: resistor)
+        #expect(bands() == [.brown, .black, .orange])
+        bench.setResistance(0.01, unit: .megohms, for: resistor)
+        #expect(bands() == [.brown, .black, .orange])
+        bench.setResistance(12.3, unit: .kilohms, for: resistor)
+        #expect(bands() == [.brown, .red, .orange, .red])
+        bench.setResistance(4.7, unit: .ohms, for: resistor)
+        #expect(bands() == [.yellow, .violet, .gold])
+        bench.setResistance(0.47, unit: .ohms, for: resistor)
+        #expect(bands() == [.yellow, .violet, .silver])
+        bench.setResistance(12.345, unit: .ohms, for: resistor)
+        #expect(bands() == [])
+        #expect(AxialArtwork(part: part, appearance: .schematic) == nil)
+    }
+
+    @Test func axialResistorMatchesDiodeSpanAndKeepsWiringAcrossAppearances() throws {
+        let bench = Workbench()
+        let resistor = Resistor()
+        bench.add("R_Small", component: resistor)
+        bench.add("1N4148", component: Diode1N4148())
+        bench.add("VDD", component: WorkbenchPower(.fiveVolts))
+        let part = try #require(bench.parts.first)
+        let diode = bench.parts[1]
+        let resistorPin = WorkbenchTerminal(partID: part.id, pinNumber: 1)
+        let source = WorkbenchTerminal(partID: bench.parts[2].id, pinNumber: 1)
+        bench.select(source)
+        bench.select(resistorPin)
+        let net = try #require(bench.circuitNet(at: source))
+        let position = CGPoint(x: 50, y: 110)
+        let diodeGeometry = SchematicPartGeometry(part: diode, turns: 0, appearance: .physicalDIP)
+        let diodeFirst = try #require(diodeGeometry.pins[1])
+        let diodeSecond = try #require(diodeGeometry.pins[2])
+        let halfSpan = (diodeSecond.x - diodeFirst.x) / 2
+
+        bench.componentAppearance = .physicalDIP
+        for turns in 0..<4 {
+            let physical = SchematicPartGeometry(part: part, turns: turns, appearance: .physicalDIP)
+            let schematic = SchematicPartGeometry(part: part, turns: turns)
+            let origin = physical.canvasOrigin(at: position, imported: false)
+            #expect(origin == schematic.canvasOrigin(at: position, imported: false))
+            for pin in [1, 2] {
+                let offset = CGPoint(x: pin == 1 ? -halfSpan : halfSpan, y: 0).schematicRotated(turns)
+                let endpoint = try #require(physical.location(of: pin, at: position, turns: turns, imported: false))
+                #expect(endpoint == CGPoint(x: origin.x + offset.x, y: origin.y + offset.y))
+                #expect(endpoint == WorkbenchWire.snap(endpoint))
+            }
+        }
+        bench.rotatePart(part.id, by: 1)
+        #expect(bench.circuitNet(at: resistorPin) === net)
+        bench.componentAppearance = .schematic
+        #expect(bench.circuitNet(at: resistorPin) === net)
+    }
+
+    @Test func axialSmallCapacitorUsesEditedMarkingAndKeepsWiringThroughRotation() throws {
+        let bench = Workbench()
+        let capacitor = Capacitor(.small)
+        bench.add("C_Small", component: capacitor)
+        bench.add("GND", component: WorkbenchPower(.ground))
+        let part = try #require(bench.parts.first)
+        let lead = WorkbenchTerminal(partID: part.id, pinNumber: 2)
+        let ground = WorkbenchTerminal(partID: bench.parts[1].id, pinNumber: 1)
+        bench.select(ground)
+        bench.select(lead)
+        let net = try #require(bench.circuitNet(at: ground))
+        bench.componentAppearance = .physicalDIP
+
+        func marking() -> String? {
+            guard case let .smallCapacitor(marking)? = AxialArtwork(part: part, appearance: .physicalDIP)
+            else { return nil }
+            return marking
+        }
+
+        #expect(marking() == "104")
+        bench.setCapacitance(22, for: capacitor)
+        #expect(marking() == "223")
+        bench.setCapacitance(0.0047, for: capacitor)
+        #expect(marking() == nil)
+
+        let position = CGPoint(x: 50, y: 110)
+        for turns in 0..<4 {
+            let physical = SchematicPartGeometry(part: part, turns: turns, appearance: .physicalDIP)
+            let schematic = SchematicPartGeometry(part: part, turns: turns)
+            let origin = physical.canvasOrigin(at: position, imported: false)
+            #expect(origin == schematic.canvasOrigin(at: position, imported: false))
+            for pin in [1, 2] {
+                let offset = CGPoint(x: (pin == 1 ? -3 : 3) * WorkbenchWire.gridSpacing, y: 0)
+                    .schematicRotated(turns)
+                let endpoint = try #require(physical.location(of: pin, at: position, turns: turns, imported: false))
+                #expect(endpoint == CGPoint(x: origin.x + offset.x, y: origin.y + offset.y))
+                #expect(endpoint == WorkbenchWire.snap(endpoint))
+            }
+        }
+        bench.rotatePart(part.id, by: 1)
+        #expect(bench.circuitNet(at: lead) === net)
+        bench.componentAppearance = .schematic
+        #expect(bench.circuitNet(at: lead) === net)
+    }
+
+    @Test func axialPolarizedCapacitorMarksMicrofaradsAndKeepsPinTwoConnected() throws {
+        let bench = Workbench()
+        let capacitor = Capacitor(.polarized)
+        bench.add("C_Polarized", component: capacitor)
+        bench.add("GND", component: WorkbenchPower(.ground))
+        let part = try #require(bench.parts.first)
+        let negative = WorkbenchTerminal(partID: part.id, pinNumber: 2)
+        let ground = WorkbenchTerminal(partID: bench.parts[1].id, pinNumber: 1)
+        bench.select(ground)
+        bench.select(negative)
+        let net = try #require(bench.circuitNet(at: negative))
+
+        func marking() -> String? {
+            guard case let .polarizedCapacitor(marking)? = AxialArtwork(part: part, appearance: .physicalDIP)
+            else { return nil }
+            return marking
+        }
+
+        #expect(marking() == "10 µF")
+        bench.setCapacitance(47, for: capacitor)
+        #expect(marking() == "47 µF")
+        #expect(AxialArtwork(part: part, appearance: .schematic) == nil)
+        #expect(part.pins[1]?.name == "+")
+        #expect(part.pins[2]?.name == "−")
+
+        bench.componentAppearance = .physicalDIP
+        let position = CGPoint(x: 50, y: 110)
+        for turns in 0..<4 {
+            let physical = SchematicPartGeometry(part: part, turns: turns, appearance: .physicalDIP)
+            let origin = physical.canvasOrigin(at: position, imported: false)
+            let schematic = SchematicPartGeometry(part: part, turns: turns)
+            #expect(origin == schematic.canvasOrigin(at: position, imported: false))
+            for pin in [1, 2] {
+                let offset = CGPoint(x: (pin == 1 ? -3 : 3) * WorkbenchWire.gridSpacing, y: 0)
+                    .schematicRotated(turns)
+                let endpoint = try #require(physical.location(of: pin, at: position, turns: turns, imported: false))
+                #expect(endpoint == CGPoint(x: origin.x + offset.x, y: origin.y + offset.y))
+                #expect(endpoint == WorkbenchWire.snap(endpoint))
+            }
+            #expect(bench.circuitNet(at: negative) === net)
+            bench.rotatePart(part.id, by: 1)
+        }
+        bench.componentAppearance = .schematic
+        #expect(bench.circuitNet(at: negative) === net)
     }
 
     @Test func man74aHasSegmentLeadsOnTheLeftAndCathodesOnTheBottom() {
