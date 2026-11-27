@@ -38,13 +38,9 @@ struct TO92Package {
                               control: CGPoint(x: face.maxX, y: face.maxY - 3))
             path.closeSubpath()
         }
-        context.fill(housing, with: .linearGradient(
-            Gradient(colors: [Color(white: 0.16), Color(white: 0.07)]),
-            startPoint: CGPoint(x: face.midX, y: face.minY),
-            endPoint: CGPoint(x: face.midX, y: face.maxY)))
         context.stroke(housing, with: .color(isSelected ? .cyan : .black),
                        style: StrokeStyle(lineWidth: 3, lineJoin: .round))
-        context.stroke(housing, with: .color(Color(white: 0.95)),
+        context.stroke(housing, with: .color(.black),
                        style: StrokeStyle(lineWidth: 1.25, lineJoin: .round))
     }
 }
@@ -64,11 +60,11 @@ struct TO92PackageView: View {
             Canvas { context, _ in
                 context.draw(Text(transistor.designation.rawValue)
                     .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(Color.white), at: CGPoint(x: face.midX, y: face.minY + 18))
+                    .foregroundStyle(Color.black), at: CGPoint(x: face.midX, y: face.minY + 18))
                 for lead in package.leads {
                     let end = package.endpoints[lead.number]!
                     context.draw(Text(lead.name).font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(Color.white), at: CGPoint(x: end.x, y: end.y - 12))
+                        .foregroundStyle(Color.black), at: CGPoint(x: end.x, y: end.y - 12))
                     let pad = CGRect(x: end.x - 4.5, y: end.y - 4.5, width: 9, height: 9)
                     context.fill(Path(ellipseIn: pad), with: .color(Color(red: 0.86, green: 0.08, blue: 0.05)))
                     context.fill(Path(ellipseIn: pad.insetBy(dx: 2, dy: 2)), with: .color(.white))

@@ -287,6 +287,16 @@ enum CounterChip: String, CaseIterable, Codable {
     case cd4026 = "CD4026"
     case cd4029 = "CD4029"
     case cd4516 = "CD4516"
+    case ls90 = "SN74LS90"
+    case ls92 = "SN74LS92"
+    case ls93 = "SN74LS93"
+
+    var isTTL: Bool {
+        switch self {
+        case .ls90, .ls92, .ls93: true
+        default: false
+        }
+    }
 
     var detail: String {
         switch self {
@@ -294,6 +304,9 @@ enum CounterChip: String, CaseIterable, Codable {
         case .cd4026: "Decade Counter · Seven-Segment Driver"
         case .cd4029: "Presettable Binary/Decade Up/Down Counter"
         case .cd4516: "Presettable Binary Up/Down Counter"
+        case .ls90: "Decade Counter · Divide by 2 and 5"
+        case .ls92: "Divide-by-12 Counter · Divide by 2 and 6"
+        case .ls93: "Binary Counter · Divide by 2 and 8"
         }
     }
 
@@ -303,6 +316,7 @@ enum CounterChip: String, CaseIterable, Codable {
         case .cd4026: CD4026()
         case .cd4029: CD4029()
         case .cd4516: CD4516()
+        case .ls90, .ls92, .ls93: SN74LSCounter(self)
         }
     }
 
@@ -312,6 +326,7 @@ enum CounterChip: String, CaseIterable, Codable {
         case is CD4026: .cd4026
         case is CD4029: .cd4029
         case is CD4516: .cd4516
+        case let chip as SN74LSCounter: chip.kind
         default: nil
         }
     }

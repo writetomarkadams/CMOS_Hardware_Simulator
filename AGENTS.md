@@ -62,11 +62,17 @@ The following components have been implemented and tested.
 | CD4011 | Quad two-input NAND gate |
 | CD4071 | Quad two-input OR gate |
 | CD4081 | Quad two-input AND gate |
+| 74HC08 | Quad two-input AND gate, 74HC CMOS |
 | CD40106 | Hex digital Schmitt-symbol inverter |
 
 CD4011/CD4071/CD4081 use separately placed A–D gates and one shared E power unit. Preserve physical pin mapping (1/2→3, 5/6→4, 8/9→10, 12/13→11), VDD on 14, and VSS on 7. All units share one underlying chip instance.
 
 For CD4071, any HIGH input establishes HIGH. Two LOW inputs establish LOW. Other combinations produce X, including LOW with an unknown or disconnected input. Preserve the shared unpowered-output X policy and Automatic Power behaviour.
+
+74HC08 models the TI SN74HC08N DIP-14. Its gates use pins 1/2→3,
+4/5→6, 9/10→8 and 12/13→11, with GND on 7 and VCC on 14. Preserve
+the existing DIP artwork, the four schematic units and shared power unit, and
+the distinct CD4081 mapping. See PROJECT_STATUS.md for the model and validation.
 
 ### Timers
 
@@ -107,6 +113,16 @@ Preserve right-click Set Capacitance text editors, positive finite-value validat
 | CD4516 | Binary up/down counter |
 | CD4518 | Dual BCD counter |
 | CD4520 | Dual binary counter |
+| SN74LS90 | TTL decade ripple counter, independent ÷2 and ÷5 sections |
+| SN74LS92 | TTL divide-by-12 ripple counter, independent ÷2 and ÷6 sections |
+| SN74LS93 | TTL binary ripple counter, independent ÷2 and ÷8 sections |
+
+The TI SN74LS90N, SN74LS92N and SN74LS93N share CKA on 14, CKB on 1,
+QA on 12, VCC on 5 and GND on 10. The LS92 has distinct reset and QB–QD
+pin assignments. Preserve the physical numbering, inert NC pins, separate
+falling-edge clocks and LS90 set-to-nine priority. See PROJECT_STATUS.md for
+wiring, the electrical abstraction and the TI datasheet references.
+
 
 CD4029 uses PRESET ENABLE (1), active-low CARRY IN (5) and CARRY OUT (7), BINARY/DECADE (9), UP/DOWN (10), CLOCK (15), VSS (8) and VDD (16). JAM1–JAM4 are 4/12/13/3 and Q1–Q4 are 6/11/14/2, least significant first. PRESET ENABLE HIGH loads JAM asynchronously. With PRESET ENABLE and CARRY IN LOW, a rising CLOCK advances the count. BINARY/DECADE HIGH selects 0–15 and LOW selects 0–9. UP/DOWN HIGH counts up. Preserve shared power invalidation, common-clock cascading, and physical pin mapping for KiCad `4xxx:4029` and `4xxx_IEEE:4029`. See the [TI CD4029B datasheet](https://www.ti.com/lit/ds/symlink/cd4029b.pdf).
 
@@ -152,6 +168,15 @@ Display segments must respond to their electrical connections, not automatically
 
 The Transistor component defaults to onsemi 2N3904. The BC547B designation uses the onsemi BC547BG and reverses collector and emitter pin numbers relative to 2N3904. Preserve designation, pin numbers, rotation, KiCad symbol mapping and archive defaults. Both use ideal digital switching and limited grounded-emitter DC approximations. The onsemi 2N3906 uses E–B–C in the same TO-92 renderer, an inward schematic emitter arrow, and an ideal active-LOW high-side switch with a HIGH emitter. Keep its collector out of the discrete DC solve. See PROJECT_STATUS.md for eligibility, parameter provenance and known discrepancies.
 
+### Mechanical switches
+
+Switch defaults to the normally open KiCad `Switch:SW_Push` (pins 1 and 2).
+The `SW_SPDT` designation has common on pin 2 and throws on pins 1 and 3.
+Preserve passive bidirectional connectivity, transient push-button press state,
+persistent SPDT position, grid-aligned pins in both views, and the designation
+lock for wired or embedded symbols. Existing Logic Pull-up archives remain
+supported. See PROJECT_STATUS.md for the electrical model and its limits.
+
 ### Connectors
 
 The vertical 2.54 mm pin headers (1×2, 1×3, 1×8) expose independent physical contacts. They never drive or bridge nets. Preserve pin numbering and validate the KiCad footprint together with the matching schematic symbol.
@@ -193,6 +218,18 @@ For all new or modified components, verify:
 5. Work toward simulating a complete CMOS digital clock.
 
 ## Latest verification
+
+On 27 November 2026, the macOS build and all 272 test case executions passed
+with the three SN74LS counters. The 33 new cases cover independent falling
+edges, both LS90 cascade modes, all LS90 reset/preset combinations, explicit
+power, solved TTL input thresholds, DIP and schematic rotation, and KiCad
+netlist and archive round-trips. Existing clock regressions passed.
+
+
+On 26 November 2026, the macOS build and full test suite passed with 74HC08.
+Coverage includes the four AND channels, explicit and automatic power, solved
+input voltages, DIP and schematic rotation, KiCad import and archive restore.
+The existing CD4081 regressions also passed.
 
 On 25 November 2026, the macOS build and all 189 tests passed with the digital 2N3906 designation. Coverage includes high-side switching, open inputs, DC isolation at the collector, pin geometry, KiCad import and archive restore.
 

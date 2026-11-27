@@ -143,7 +143,9 @@ struct WorkbenchView: View {
             }
         }
         .sheet(isPresented: $showingLibrary) {
-            ComponentLibraryView(bench: bench, placeNewPart: placeNewPart)
+            ComponentLibraryView(bench: bench, placeNewPart: placeNewPart) {
+                if !scopeDocked { showScope() }
+            }
         }
         .sheet(item: $editingTransistor) { part in
             if let transistor = part.component as? Transistor {
@@ -236,9 +238,13 @@ struct WorkbenchView: View {
                 .focusEffectDisabled()
                 .onChange(of: drag == nil) { _, ended in
                     if ended { dragCancelled = false }
-                    else { canvasFocused = true }
+                    else {
+                        bench.releasePressedSwitches()
+                        canvasFocused = true
+                    }
                 }
                 .onKeyPress(.escape) {
+                    if bench.releasePressedSwitches() { return .handled }
                     if placement != nil {
                         placement = nil
                     } else if placingProbe {
@@ -1499,6 +1505,9 @@ struct WorkbenchView: View {
                     }
                 }
                 .frame(width: packageLayout.size.width, height: packageLayout.size.height, alignment: .topLeading)
+            } else if let contact = part.component as? MechanicalSwitch, let symbol = part.librarySymbol {
+                MechanicalSwitchSymbol(symbol: symbol, part: part, contact: contact, bench: bench,
+                                       isSelected: isSelected, select: select, rotate: rotate)
             } else if let symbol = part.librarySymbol(for: bench.componentAppearance) {
                 SchematicSymbolView(symbol: symbol, part: part, bench: bench, isSelected: isSelected, select: select,
                                     rotate: rotate,

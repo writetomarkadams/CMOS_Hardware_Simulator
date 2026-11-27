@@ -185,6 +185,7 @@ struct KiCadSymbol {
 
     static let additionalCounters: [CounterChip: Self] = Dictionary(
         uniqueKeysWithValues: CounterChip.allCases.map { kind in
+            if kind.isTTL { return (kind, counterSymbol(kind.makeComponent())) }
             let imported = rectangularSymbol(elements: installedSymbol(String(kind.rawValue.dropFirst(2)))?.children.flatMap(\.children),
                                              pinNumbers: Array(1...16))
             return (kind, imported ?? counterSymbol(kind.makeComponent()))
@@ -207,15 +208,29 @@ struct KiCadSymbol {
         }
     )
 
-    private init(body: CGRect, polygon: [CGPoint] = [], markings: [[CGPoint]] = [], terminals: [Terminal]) {
+    private init(body: CGRect, gateOutline: GateOutline? = nil, polygon: [CGPoint] = [], markings: [[CGPoint]] = [], terminals: [Terminal]) {
         self.body = body
         self.terminals = terminals
         isCircular = false
-        gateOutline = nil
+        self.gateOutline = gateOutline
         self.polygon = polygon
         self.markings = markings
         filledMarkings = []
     }
+
+    static let mechanicalSwitches: [SwitchDesignation: Self] = Dictionary(uniqueKeysWithValues:
+        SwitchDesignation.allCases.map { designation in
+            func terminal(_ id: Int, x: CGFloat, y: CGFloat) -> Terminal {
+                Terminal(id: id, name: "", style: "line", position: CGPoint(x: x, y: y),
+                         inward: CGVector(dx: x < 0 ? 1 : -1, dy: 0), length: 2.54)
+            }
+            let pins = designation == .pushButton
+                ? [terminal(1, x: -5.08, y: 0), terminal(2, x: 5.08, y: 0)]
+                : [terminal(1, x: 5.08, y: -2.54), terminal(2, x: -5.08, y: 0),
+                   terminal(3, x: 5.08, y: 2.54)]
+            return (designation, Self(body: CGRect(x: -3.81, y: -3.81, width: 7.62, height: 7.62),
+                                      terminals: pins))
+        })
 
     static let pinHeaders: [PinHeaderKind: Self] = Dictionary(uniqueKeysWithValues:
         PinHeaderKind.allCases.map { kind in
@@ -248,8 +263,9 @@ struct KiCadSymbol {
     private static func counterSymbol(_ chip: any PoweredChip) -> Self {
         let inputs = chip.pins.values.filter { $0.direction == .input }.sorted { $0.number < $1.number }
         let outputs = chip.pins.values.filter { $0.direction == .output }.sorted { $0.number < $1.number }
+        let unconnected = chip.pins.values.filter { $0.direction == .noConnect }.sorted { $0.number < $1.number }
         var terminals: [Terminal] = []
-        for (pins, x, direction) in [(inputs, -12.7, 1.0), (outputs, 12.7, -1.0)] {
+        for (pins, x, direction) in [(inputs, -12.7, 1.0), (outputs + unconnected, 12.7, -1.0)] {
             for (row, pin) in pins.enumerated() {
                 let label: String
                 switch pin.name {
@@ -263,14 +279,15 @@ struct KiCadSymbol {
                 case "RESET": label = "RST"
                 default: label = pin.name
                 }
-                terminals.append(Terminal(id: pin.number, name: label, style: "line",
+                let style = label == "CKA" || label == "CKB" ? "inverted_clock" : "line"
+                terminals.append(Terminal(id: pin.number, name: label, style: style,
                                           position: CGPoint(x: x, y: -11.43 + Double(row) * 2.54),
                                           inward: CGVector(dx: direction, dy: 0), length: 5.08))
             }
         }
-        terminals.append(Terminal(id: chip.supplyPins.vdd, name: "VDD", style: "line",
+        terminals.append(Terminal(id: chip.supplyPins.vdd, name: chip.pins[chip.supplyPins.vdd]!.name, style: "line",
                                   position: CGPoint(x: 0, y: -20.32), inward: CGVector(dx: 0, dy: 1), length: 5.08))
-        terminals.append(Terminal(id: chip.supplyPins.vss, name: "VSS", style: "line",
+        terminals.append(Terminal(id: chip.supplyPins.vss, name: chip.pins[chip.supplyPins.vss]!.name, style: "line",
                                   position: CGPoint(x: 0, y: 20.32), inward: CGVector(dx: 0, dy: -1), length: 5.08))
         return Self(body: CGRect(x: -7.62, y: -15.24, width: 15.24, height: 30.48), terminals: terminals)
     }
@@ -364,6 +381,8 @@ struct KiCadSymbol {
 
     private static func loadUnits(_ kind: MultiUnitChip) -> [Int: Self] {
         if kind == .xor { return xorUnits() }
+        if kind == .hc08 { return hc08Units() }
+        if let package = kind.hcPackage { return hcUnits(package) }
         guard let symbol = installedSymbol(kind.rawValue) else { return [:] }
         var units: [Int: Self] = [:]
         for unit in kind.allUnits {
@@ -382,6 +401,83 @@ struct KiCadSymbol {
                 : loadUnit(expression, pinNumbers: unit.pinNumbers)
         }
         return units
+    }
+
+    private static func hc08Units() -> [Int: Self] {
+        let step = 1.27
+        let outline = GateOutline(
+            points: [CGPoint(x: 0, y: -3 * step), CGPoint(x: -3 * step, y: -3 * step),
+                     CGPoint(x: -3 * step, y: 3 * step), CGPoint(x: 0, y: 3 * step)],
+            start: CGPoint(x: 0, y: -3 * step), middle: CGPoint(x: 3 * step, y: 0),
+            end: CGPoint(x: 0, y: 3 * step))
+        var symbols = Dictionary(uniqueKeysWithValues: QuadGate.allCases.map { gate in
+            let pins = SN74HC08.terminals(gate)
+            let terminals = [
+                Terminal(id: pins.inputA, name: "", style: "line", position: CGPoint(x: -7 * step, y: -2 * step),
+                         inward: CGVector(dx: 1, dy: 0), length: 4 * step),
+                Terminal(id: pins.inputB, name: "", style: "line", position: CGPoint(x: -7 * step, y: 2 * step),
+                         inward: CGVector(dx: 1, dy: 0), length: 4 * step),
+                Terminal(id: pins.output, name: "", style: "line", position: CGPoint(x: 7 * step, y: 0),
+                         inward: CGVector(dx: -1, dy: 0), length: 4 * step)
+            ]
+            return (gate.rawValue, Self(body: CGRect(x: -3 * step, y: -3 * step, width: 6 * step, height: 6 * step),
+                                        gateOutline: outline, terminals: terminals))
+        })
+        let chip = SN74HC08()
+        symbols[5] = Self(
+            body: CGRect(x: -5 * step, y: -2 * step, width: 10 * step, height: 4 * step),
+            terminals: [
+                Terminal(id: 14, name: chip.pins[14]!.name, style: "line", position: CGPoint(x: -7 * step, y: 0),
+                         inward: CGVector(dx: 1, dy: 0), length: 2 * step),
+                Terminal(id: 7, name: chip.pins[7]!.name, style: "line", position: CGPoint(x: 7 * step, y: 0),
+                         inward: CGVector(dx: -1, dy: 0), length: 2 * step)
+            ])
+        return symbols
+    }
+
+    private static func hcUnits(_ package: HCGatePackage) -> [Int: Self] {
+        let step = 1.27
+        func point(_ x: Double, _ y: Double) -> CGPoint {
+            CGPoint(x: x * step, y: y * step)
+        }
+
+        let templates: [Int: Self]
+        let inputsAndOutput: [[Int]]
+        if package.quadKind != nil {
+            templates = package == .hc00 ? hc08Units() : xorUnits()
+            inputsAndOutput = QuadGate.allCases.map { gate in
+                let pins = package.quadTerminals(gate)
+                return [pins.inputA, pins.inputB, pins.output]
+            }
+        } else {
+            let inverter = Self(
+                body: CGRect(x: -3 * step, y: -3 * step, width: 6 * step, height: 6 * step),
+                polygon: [point(-3, -3), point(3, 0), point(-3, 3)],
+                markings: package == .hc14
+                    ? [[point(-2, 1), point(-1, 1), point(-1, -1), point(0.5, -1)],
+                       [point(-1.5, 1), point(-0.5, 1), point(-0.5, -1)]] : [],
+                terminals: [
+                    Terminal(id: 1, name: "", style: "line", position: point(-7, 0),
+                             inward: CGVector(dx: 1, dy: 0), length: 4 * step),
+                    Terminal(id: 2, name: "", style: "inverted", position: point(7, 0),
+                             inward: CGVector(dx: -1, dy: 0), length: 4 * step)
+                ])
+            inputsAndOutput = HCGatePackage.inverterTerminals.map { [$0.input, $0.output] }
+            templates = Dictionary(uniqueKeysWithValues: (1...inputsAndOutput.count).map { ($0, inverter) })
+        }
+        var symbols = Dictionary(uniqueKeysWithValues: inputsAndOutput.enumerated().map { index, numbers in
+            let template = templates[index + 1]!
+            let terminals = zip(numbers, template.terminals).map { number, pin in
+                let invert = number == numbers.last && (package == .hc00 || package == .hc02)
+                return Terminal(id: number, name: "", style: invert ? "inverted" : pin.style,
+                                position: pin.position, inward: pin.inward, length: pin.length)
+            }
+            let markings = package == .hc02 || package == .hc32 ? [] : template.markings
+            return (index + 1, Self(body: template.body, gateOutline: template.gateOutline,
+                                    polygon: template.polygon, markings: markings, terminals: terminals))
+        })
+        symbols[inputsAndOutput.count + 1] = hc08Units()[5]
+        return symbols
     }
 
     private static func xorUnits() -> [Int: Self] {

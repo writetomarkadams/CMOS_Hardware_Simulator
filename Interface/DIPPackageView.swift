@@ -26,7 +26,7 @@ struct DIPPackage {
         isCD4518 = (part.component as? DualCounter)?.kind == .bcd
         let count: Int
         switch part.component {
-        case is CD4011, is CD4070, is CD4081, is CD40106: count = 14
+        case is CD4011, is CD4070, is CD4081, is SN74HC08, is CD40106, is any HCGateChip, is SN74LSCounter: count = 14
         case is CD4017, is CD4026, is CD4027, is CD4029, is CD4060, is CD4510, is CD4516: count = 16
         case is DualCounter where isCD4518: count = 16
         case is AnalogSwitch: count = 16
@@ -41,7 +41,8 @@ struct DIPPackage {
         let rows = count / 2
         let step = WorkbenchWire.gridSpacing
         usesCD4070Artwork = part.component is CD4011 || part.component is CD4070 || part.component is CD4081
-            || part.component is CD40106 || count == 16
+            || part.component is CD40106 || part.component is SN74HC08 || part.component is any HCGateChip
+            || part.component is SN74LSCounter || count == 16
         size = CGSize(width: 18 * step, height: CGFloat(2 * rows + 6) * step)
         let rightEndpoint = size.width - 2 * step
         body = CGRect(x: 40, y: 16, width: 100, height: size.height - 24)
@@ -132,7 +133,9 @@ struct DIPPackageView: View {
                        style: StrokeStyle(lineWidth: usesCD4070Artwork ? 3.5 : 3, lineJoin: .round))
         context.fill(Path(ellipseIn: CGRect(x: body.minX + (usesCD4070Artwork ? 9 : 5), y: body.minY + (usesCD4070Artwork ? 8 : 5), width: 8, height: 8)),
                      with: .color(.black))
-        let marking = package.analogSwitchKind?.rawValue ?? package.displayDriverKind?.rawValue
+        let marking = (part.component as? SN74LSCounter)?.kind.rawValue
+                    ?? (part.component as? any HCGateChip)?.package.rawValue
+                    ?? package.analogSwitchKind?.rawValue ?? package.displayDriverKind?.rawValue
                     ?? (part.component is CD4011 ? "CD4011"
                     : part.component is CD4070 ? "CD4070" : part.component is CD40106 ? "CD40106"
                     : part.component is CD4026 ? "CD4026"
@@ -154,6 +157,7 @@ struct DIPPackageView: View {
             let tab = CGRect(x: left ? point.x : edge, y: point.y - tabHeight / 2,
                              width: abs(edge - point.x), height: tabHeight)
             let colour: Color = switch pin.direction {
+            case .noConnect: .gray
             case .input: Color(red: 0.68, green: 0.92, blue: 0.48)
             case .output: Color(red: 0.59, green: 0.84, blue: 0.96)
             case .power: Color(red: 1, green: 0.45, blue: 0.38)

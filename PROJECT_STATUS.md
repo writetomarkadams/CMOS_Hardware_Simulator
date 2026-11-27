@@ -4,7 +4,7 @@
 **Platform:** macOS / SwiftUI / Xcode  
 **Repository:** https://github.com/writetomarkadams/CMOS_Hardware_Simulator  
 **Branch:** main  
-**Last updated:** 25 November 2026\
+**Last updated:** 27 November 2026\
 **Project root:** /Users/mark.adams/Documents/GitHub/CMOS_Hardware_Simulator
 
 Use this project root for all development. Leave the previous project location untouched.
@@ -16,6 +16,46 @@ A macOS application for building and simulating electronic circuits, with an ini
 The application opens directly into the Circuit Workbench. Users can place components, wire individual physical pins, configure sources and indicators, and run digital simulations. The longer-term target is a complete CMOS 12/24-hour clock.
 
 The macOS app includes an AppIcon asset in Debug and Release. The built app keeps the bundle name CMOS4000Simulator.
+
+### Workbench changes verified on 27 November 2026
+
+- The native arm64 macOS build and full Xcode suite passed. Xcode reported 209 tests, zero failures and zero skips. Coverage included the 74HC08, mechanical switches, the series 2N3904 pull-down and all three SN74LS counters.
+- The component library groups parts by family and exposes the oscilloscope under Instruments. The 74HC group also includes 74HC00, 74HC02, 74HC04, 74HC14, 74HC32 and 74HC86 with full-package and individual-unit placement. The shared geometry regression covers their schematic pins. Dedicated truth-table and import tests in this change cover 74HC08. The 74HC14 is a digital approximation with no hysteresis state.
+- Physical TO-92 rendering uses an outlined housing with black markings.
+
+### 74HC08 quad AND gate
+
+- The device models the Texas Instruments commercial SN74HC08N in the N
+  (PDIP-14) package. Sections 4 and 7.4 give the top-view pinout and function
+  table. The library offers a complete 74HC08 Package and separately placeable
+  AND units with shared power unit E. The package reuses the CD4070 DIP artwork.
+  [TI SN74HC08 datasheet, SCLS081J, February 2025](https://www.ti.com/lit/ds/symlink/sn74hc08.pdf)
+- KiCad imports map `74xx:74HC08` and `74xx_IEEE:74HC08` by physical pin number.
+  The installed KiCad library's pin-compatible `74xx:74LS08` symbol also maps
+  when its value explicitly reads `74HC08`. Units A–E share the same model.
+- TI §5.3 recommends 2–6 V across VCC and GND. This is a device rating.
+  Explicit Power uses ChipSim's +5 V and ground rails. Missing or incorrect
+  rails make every output X. Automatic Power assumes ideal 5 V operation.
+  With binary inputs, the outputs follow the AND function table exactly.
+  A known LOW determines the result with a floating or unknown partner.
+  Other unresolved combinations yield X.
+- At VCC = 2, 4.5 and 6 V, TI §5.3 lists maximum VIL of 0.5, 1.35 and 1.8 V
+  and minimum VIH of 1.5, 3.15 and 4.2 V across the recommended operating
+  temperature range. When the existing discrete DC solver supplies a voltage,
+  ChipSim uses inclusive VIL ≤ 1.5 V and VIH ≥ 3.5 V, interpolated between the
+  4.5 and 6 V rows for its fixed 5 V rails. Intermediate voltages are X.
+  Nets without a DC solution use their resolved digital levels.
+- The regression fixture checks all four gates against the function table
+  with ideal 0 V/5 V inputs and unloaded outputs. The DC fixture holds one
+  input at +5 V and checks a resistor divider at 1.4, 1.6, 3.4 and 3.6 V
+  (voltage tolerance 1 µV) for LOW, X, X and HIGH. Its reverse-biased LED
+  enables the existing solver without loading the divider in that model.
+  The regression also checks CD4081's existing DC conversion on the same net.
+- Outputs are ideal digital drivers. Propagation delay, slew, output droop
+  and drive limits, current draw, leakage, input capacitance, clamp currents,
+  floating-input transients, and temperature dependence are outside this
+  model. The simulator has no variable supply or general analog solver to
+  verify operation across the full recommended supply range.
 
 ### Workbench files and unsaved changes
 
@@ -273,7 +313,8 @@ New files save the selected power mode. Older version-1 files reopen in Explicit
 The onsemi 2N3904 uses TO-92 case 135AN, with pins 1 emitter, 2 base and 3 collector from left to right facing the flat side with leads down. The simulator uses two paths.
 
 - **Digital** — A LOW base releases the collector. A HIGH base and LOW emitter drive it LOW. Other states drive X. A simple resistive pull-up and base-resistor stage uses this path, so its logic state does not imply a measured saturation voltage or base current.
-- **DC** — A connected region qualifies with a physical LED (LED3mm) or a combination of a 1N4148 and a supported NPN transistor. The discrete pass requires at most 32 nodes, compatible ideal 0 V/5 V drivers, emitters fixed at 0 V and a resistive path from every unknown node to an ideal driver. An ineligible region or failed solve retains digital evaluation. The presence of a switched-connectivity component such as CD4051 bypasses the discrete DC pass. A scope probe can show solved DC voltage. The solver classifies voltages at or below 0.8 V as LOW, at or above 2.0 V as HIGH, and those between as X.
+- **Series digital** — Two onsemi 2N3904s with a direct, two-pin upper-emitter to lower-collector junction and the lower emitter held at GND can act as a series pull-down in the ideal 5 V digital model. A known LOW at the lower base opens the path, allowing the upper collector to release a resistive pull-up even when the upper base is HIGH and the junction floats. When both bases are HIGH, the existing digital model pulls LOW. Base levels come from settled nets, including rails selected by mechanical SPDTs. The regression fixture uses +5 V, an 820 Ω pull-up and two 10 kΩ base resistors. It checks all four logic combinations and an open switch throw. This path applies ideal cutoff and conduction, using no fitted electrical parameters or SPICE model. It does not calculate midpoint voltage, require a particular resistor value, or verify base drive, loading, saturation headroom or switching time. Junctions with extra connections and open or ambiguous base inputs retain the ordinary digital rules.
+- **DC** — A connected region qualifies with a physical LED (LED3mm) or a combination of a 1N4148 and a supported NPN transistor. The discrete pass requires at most 32 nodes, compatible ideal 0 V/5 V drivers, emitters fixed at 0 V and a resistive path from every unknown node to an ideal driver. An ineligible region or failed solve retains digital evaluation. A CD4051 or another modeled CMOS analog switch bypasses the discrete DC pass. Mechanical contacts join digital nets, while regions touching mechanical switch terminals are excluded from the DC pass. A scope probe can show solved DC voltage. The solver classifies voltages at or below 0.8 V as LOW, at or above 2.0 V as HIGH, and those between as X.
 - **DC approximation** — The base current uses a 0.68 V knee and a 50 Ω slope resistance, clipped at zero. The collector law blends 100 times the base current (dimensionless multiplier) with the positive collector-emitter voltage divided by 20 Ω. All four values are solver inputs with undocumented derivation. The static model bounds trial voltages to 0–5 V and omits leakage, reverse conduction, breakdown, capacitance, charge storage, switching time, temperature, self-heating and device-rating enforcement.
 
 The [onsemi 2N3904/D datasheet, October 2024, Rev. 3, pp. 1–2](https://www.onsemi.com/pdf/datasheet/2n3904-d.pdf) specifies the following on-characteristics at 25 °C for pulses up to 300 µs at up to 2% duty cycle. The simulator uses static resistive fixtures at the same terminal operating points. Tests characterize the current implementation and keep the datasheet comparison separate.
@@ -410,3 +451,86 @@ The rebuilt native app opened successfully. The View menu switched from Schemati
 **Suggested next task:** Continue sequential power-loss handling with CD4510, keeping its unknown-input and clock-transition work in a clearly scoped stage.
 
 Read this status file and inspect the current working tree when resuming development. Update the document after significant features, architectural decisions, or confirmed issues.
+
+
+## Mechanical switch model
+
+- **Source and terminal roles.** The [official KiCad Switch library](https://kicad.github.io/symbols/Switch)
+  defines these as generic components. Pin positions and roles follow the installed
+  KiCad 10 `Switch.kicad_sym` (library format 20251024), specifically the
+  `SW_Push` and `SW_SPDT` symbol pin entries. The physical view is a generic
+  top-view illustration with the same numbered attachment points. There is no
+  manufacturer, part suffix, footprint, datasheet rating, or SPICE model for
+  these designations.
+- **Digital operation.** In both workbench power modes, a closed contact joins
+  its two nets into one digital electrical island. Strong and weak drivers,
+  contention, and high impedance use the existing net resolver. The open
+  contact contributes no connection or drive. SW_Push joins 1 to 2 during a
+  press and opens on release or cancellation. SW_SPDT starts connected 2–1
+  and alternates between 2–1 and 2–3. Archives and clipboard copies preserve
+  the maintained position. A push button reopens or pastes released.
+- **Electrical limits.** Contacts are ideal open circuits or ideal shorts in
+  the digital model. There are no numeric contact parameters or part ratings.
+  This model omits contact resistance, leakage, bounce, switching transients,
+  and break-before-make timing. External pull resistors use the existing
+  weak-driver approximation in digital circuits. Their resistance does not
+  set an analogue voltage or current in this path.
+- **DC and timing.** The discrete DC solver uses fixed wire nets and has no
+  switch stamps. A DC device region touching a mechanical switch terminal's
+  wire net uses the digital fallback in either contact position, including
+  when the shared net is a supply rail. Independent eligible regions can
+  still solve. The existing global DC bypass for CD4051/52/53 remains in
+  effect. NE555 timing topology recognition still uses fixed wires, so
+  switched timing networks remain outside the supported RC model.
+- **Verification fixtures.** Workbench tests use ideal +5 V and GND logic rails.
+  They check both directions of push-button conduction, high impedance at rest,
+  contention, and exact HIGH/LOW readings with an external 470 Ω pull-up or
+  pull-down (the default resistor value, used in the digital approximation).
+  They also cover KiCad pin mapping, rotation, archives, clipboard copies, and
+  an independent DC LED branch with a switch present.
+
+## SN74LS90, SN74LS92 and SN74LS93 ripple counters
+
+The 74LS Series TTL family includes TI SN74LS90N, SN74LS92N and SN74LS93N
+in top-view PDIP-14. The model follows [TI SDLS940A, revised March 1988](https://www.ti.com/lit/ds/symlink/sn74ls90.pdf).
+Page 1 gives pinouts and cascade wiring. Pages 3–4 specify the control
+truth tables, settled output sequences and clock polarity. Pages 8–9 give
+the SN74LS electrical limits and page 10 shows the falling-edge relationship.
+
+| Part | R0(1)/R0(2) | R9(1)/R9(2) | QA/QB/QC/QD | NC |
+|---|---|---|---|---|
+| SN74LS90N | 2/3 | 6/7 | 12/9/8/11 | 4, 13 |
+| SN74LS92N | 6/7 | — | 12/11/9/8 | 2, 3, 4, 13 |
+| SN74LS93N | 2/3 | — | 12/9/8/11 | 4, 6, 7, 13 |
+
+All three use pin 14 CKA, pin 1 CKB, pin 5 VCC and pin 10 GND.
+Clock A toggles QA and clock B steps its own ÷5, ÷6 or ÷8 sequence,
+respectively. Connect QA to CKB and clock CKA for ÷10, ÷12 or ÷16.
+In QD–QA bit order, the LS92 cascaded sequence is 0–5 then 8–13.
+On the LS90, QD to CKA with the external clock on CKB produces the
+bi-quinary sequence and a divide-by-ten square wave on QA. Both R0 inputs
+HIGH reset to zero asynchronously. On the LS90, both R9 inputs HIGH set
+the outputs to nine and take priority over R0. Drive at least one input of
+each inactive control pair LOW. NC pins have no internal connection.
+
+The simulator uses ideal digital HIGH/LOW drivers and the shared 5 V DC
+interface. The guaranteed SN74LS input limits, VIL max 0.8 V and VIH min
+2.0 V, are the solver-to-logic thresholds for solved input voltages. The
+intervening region is X. The TI limits apply over the SN74LS recommended
+4.75–5.25 V supply and 0–70 °C range. The workbench supplies ideal 5 V and
+ground in Explicit Power mode and assumes valid supply in Automatic Power
+mode. Temperature and supply variation are outside the model. Count state
+starts unknown and requires reset or preset after power loss or archive
+reopen. Floating or X clocks break edge qualification and leave the stored
+count unchanged. Floating controls are unknown unless the other input of
+their pair establishes LOW. TTL floating-input bias, output voltage drop,
+input and output current, fan-out, propagation delay, ripple glitches,
+minimum pulse widths and setup time are omitted.
+
+Validation fixtures use ideal logic sources with settled observations
+after each half-cycle. At ideal 5 V, the expected control and sequence bits
+match TI page 3 exactly. Separate DC-divider fixtures exercise the input
+regions at 0.79, 0.81, 1.99 and 2.01 V (fixture voltage tolerance 1 µV).
+The physical DIP and built-in schematic share pin numbers with the
+`74xx:74LS90`, `74xx:74LS92` and `74xx:74LS93` KiCad netlist mappings
+and existing Workbench archive format.

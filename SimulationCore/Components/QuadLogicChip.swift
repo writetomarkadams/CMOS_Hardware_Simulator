@@ -9,40 +9,44 @@ enum QuadGate: Int, CaseIterable {
         case .d: (12, 13, 11)
         }
     }
-
-    var pinNumbers: [Int] {
-        [terminals.inputA, terminals.inputB, terminals.output].sorted()
-    }
 }
 
 enum QuadLogicKind {
-    case and, nand, or, xor
+    case and, nand, or, nor, xor
 }
 
 class QuadLogicChip: LogicComponent {
     let pins: [Int: Pin]
     private let kind: QuadLogicKind
+    private let pinout: (QuadGate) -> (inputA: Int, inputB: Int, output: Int)
 
-    init(kind: QuadLogicKind) {
+    init(kind: QuadLogicKind, pinout: @escaping (QuadGate) -> (inputA: Int, inputB: Int, output: Int) = { $0.terminals },
+         ground: String? = nil, supply: String = "VDD", channelNumberFirst: Bool = false) {
         self.kind = kind
+        self.pinout = pinout
         var pinMap = [
-            7: Pin(number: 7, name: kind == .xor ? "GND" : "VSS", direction: .power),
-            14: Pin(number: 14, name: "VDD", direction: .power)
+            7: Pin(number: 7, name: ground ?? (kind == .xor ? "GND" : "VSS"), direction: .power),
+            14: Pin(number: 14, name: supply, direction: .power)
         ]
         for gate in QuadGate.allCases {
-            let (inputA, inputB, output) = gate.terminals
-            pinMap[inputA] = Pin(number: inputA, name: "A\(gate.rawValue)", direction: .input)
-            pinMap[inputB] = Pin(number: inputB, name: "B\(gate.rawValue)", direction: .input)
-            pinMap[output] = Pin(number: output, name: "Q\(gate.rawValue)", direction: .output)
+            let (inputA, inputB, output) = pinout(gate)
+            func label(_ letter: String) -> String {
+                channelNumberFirst ? "\(gate.rawValue)\(letter)" : "\(letter)\(gate.rawValue)"
+            }
+            pinMap[inputA] = Pin(number: inputA, name: label("A"), direction: .input)
+            pinMap[inputB] = Pin(number: inputB, name: label("B"), direction: .input)
+            pinMap[output] = Pin(number: output, name: label(channelNumberFirst ? "Y" : "Q"), direction: .output)
         }
         pins = pinMap
     }
 
+    func inputState(_ pin: Pin) -> LogicState { pin.state }
+
     func evaluate() {
         for gate in QuadGate.allCases {
-            let (inputA, inputB, output) = gate.terminals
-            let a = pins[inputA]!.state
-            let b = pins[inputB]!.state
+            let (inputA, inputB, output) = pinout(gate)
+            let a = inputState(pins[inputA]!)
+            let b = inputState(pins[inputB]!)
             let result: LogicState
 
             if kind == .xor {
@@ -51,7 +55,7 @@ class QuadLogicChip: LogicComponent {
                 } else {
                     .undefined
                 }
-            } else if kind == .or {
+            } else if kind == .or || kind == .nor {
                 if a == .high || b == .high {
                     result = .high
                 } else if a == .low && b == .low {
@@ -67,7 +71,7 @@ class QuadLogicChip: LogicComponent {
                 result = .undefined
             }
 
-            pins[output]!.drive(result)
+            pins[output]!.drive(kind == .nor ? result.inverted : result)
         }
     }
 }

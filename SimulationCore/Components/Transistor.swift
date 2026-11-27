@@ -81,11 +81,17 @@ final class Transistor: LogicComponent {
     }
 
     func evaluate() {
+        evaluate(seriesPathOpen: false)
+    }
+
+    func evaluate(seriesPathOpen: Bool) {
         let collector: LogicState
         switch definition.model {
         case .groundedNPN:
             switch (pin(.base).state, pin(.emitter).state) {
             case (.low, _): collector = .highImpedance
+            // The lower device can cut off the ground path while the junction floats.
+            case (.high, .highImpedance) where seriesPathOpen: collector = .highImpedance
             case (.high, .low): collector = .low
             default: collector = .undefined
             }

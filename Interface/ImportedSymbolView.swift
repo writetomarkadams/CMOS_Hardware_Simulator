@@ -62,6 +62,8 @@ struct ImportedSymbolView: View {
     }
 
     var body: some View {
+        let contact = part.component as? MechanicalSwitch
+        let actuated = contact.map { $0.isPressed || $0.selectsThrow3 } ?? false
         let artwork = AxialArtwork(part: part, appearance: bench.componentAppearance)
         let axialPins = artwork == nil ? nil : self.axialPins
         ZStack(alignment: .topLeading) {
@@ -71,8 +73,12 @@ struct ImportedSymbolView: View {
                                  bench: bench, partID: part.id, isSelected: isSelected,
                                  noConnectPins: drawing.noConnectPins)
                 }
+                if let contact {
+                    drawMechanicalSwitch(contact.designation, actuated: actuated, physical: bench.componentAppearance == .physicalDIP,
+                                         point: point, ink: isSelected ? .schematicSelectionInk : ink, in: context)
+                }
                 for graphic in drawing.graphics
-                where axialPins == nil && (displayBody == nil || graphic.fill == "background") {
+                where contact == nil && axialPins == nil && (displayBody == nil || graphic.fill == "background") {
                     let points = graphic.points.map(point)
                     let path = Path { path in
                         switch graphic.kind {
@@ -165,19 +171,26 @@ struct ImportedSymbolView: View {
             let target = graphicBounds.isNull ? CGRect(x: bounds.midX + bounds.width / 2 - 10,
                                                         y: bounds.midY + bounds.height / 2 - 10,
                                                         width: 20, height: 20) : graphicBounds
-            Rectangle().fill(.clear)
-                .frame(width: max(14, target.width), height: max(14, target.height))
-                .contentShape(Rectangle())
-                .onTapGesture(perform: select)
-                .help("\(part.reference ?? part.name) · \(value)")
-                .accessibilityLabel("\(part.reference ?? part.name) · \(value)")
-                .contextMenu {
-                    PartRotationCommands(rotate: rotate)
-                    if part.component is Resistor { Button("Set Resistance…", action: editResistance) }
-                    if part.component is Capacitor { Button("Set Capacitance…", action: editCapacitance) }
-                    if let editProperties { Button("Properties…", action: editProperties) }
-                    Button("Remove Part", role: .destructive) { bench.removePart(part.id) }
+            Group {
+                if let contact {
+                    SwitchActuator(part: part, contact: contact, bench: bench, select: select, rotate: rotate,
+                                   size: CGSize(width: max(24, target.width), height: max(24, target.height)))
+                } else {
+                    Rectangle().fill(.clear)
+                        .frame(width: max(14, target.width), height: max(14, target.height))
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: select)
+                        .help("\(part.reference ?? part.name) · \(value)")
+                        .accessibilityLabel("\(part.reference ?? part.name) · \(value)")
+                        .contextMenu {
+                            PartRotationCommands(rotate: rotate)
+                            if part.component is Resistor { Button("Set Resistance…", action: editResistance) }
+                            if part.component is Capacitor { Button("Set Capacitance…", action: editCapacitance) }
+                            if let editProperties { Button("Properties…", action: editProperties) }
+                            Button("Remove Part", role: .destructive) { bench.removePart(part.id) }
+                        }
                 }
+            }
                 .transformAnchorPreference(key: CanvasBounds.self, value: .bounds) { anchors, anchor in
                     anchors[.part(part.id)] = anchor
                 }

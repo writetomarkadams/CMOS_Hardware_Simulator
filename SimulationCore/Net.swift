@@ -34,7 +34,7 @@ final class Net {
         // Fixed thresholds for the discrete model's ideal 5 V logic interface.
         state = voltage <= 0.8 ? .low : voltage >= 2.0 ? .high : .undefined
         for pin in pins {
-            pin.receive(state, strongState: pin.strongState, supplyRail: pin.supplyRail)
+            pin.receive(state, strongState: pin.strongState, supplyRail: pin.supplyRail, dcVoltage: voltage)
         }
     }
 

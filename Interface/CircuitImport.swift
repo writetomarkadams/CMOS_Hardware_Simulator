@@ -224,8 +224,24 @@ struct CircuitImportPreview {
                   (part.library == "Connector" && part.symbol == kind.schematicSymbol + "_Pin") ||
                   (part.library == "Connector_Generic" && part.symbol == kind.schematicSymbol) else { return nil }
             return Model(name: kind.name) { PinHeader(kind) }
+        case ("Switch", "SW_Push"): return Model(name: "Switch") { MechanicalSwitch() }
+        case ("Switch", "SW_SPDT"): return Model(name: "Switch") { MechanicalSwitch(.spdt) }
+        case ("74xx", "74LS90"), ("74xx", "74LS92"), ("74xx", "74LS93"):
+            guard let kind = CounterChip(rawValue: "SN" + part.symbol) else { return nil }
+            return Model(name: kind.rawValue, make: kind.makeComponent)
+        case ("74xx", _), ("74xx_IEEE", _):
+            let kind: MultiUnitChip
+            if let named = MultiUnitChip(rawValue: part.symbol), named.is74HC {
+                kind = named
+            } else if let valued = MultiUnitChip(rawValue: part.value.uppercased()), valued.is74HC,
+                      part.symbol == "74LS" + valued.rawValue.suffix(2) {
+                kind = valued
+            } else {
+                return nil
+            }
+            return Model(name: kind.partName, units: kind, make: kind.makeComponent)
         case ("4xxx", _):
-            if let kind = MultiUnitChip(rawValue: part.symbol) {
+            if let kind = MultiUnitChip(rawValue: part.symbol), !kind.is74HC {
                 return Model(name: kind.partName, units: kind, make: kind.makeComponent)
             }
             let name = "CD" + part.symbol

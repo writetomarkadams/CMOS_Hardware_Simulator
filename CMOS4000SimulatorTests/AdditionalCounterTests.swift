@@ -287,7 +287,8 @@ struct AdditionalCounterTests {
         let bench = Workbench()
         for kind in CounterChip.allCases {
             bench.add(kind.rawValue, component: kind.makeComponent())
-            #expect(KiCadSymbol.additionalCounters[kind]?.terminals.map(\.id).sorted() == Array(1...16))
+            let pinCount = kind.isTTL ? 14 : 16
+            #expect(KiCadSymbol.additionalCounters[kind]?.terminals.map(\.id).sorted() == Array(1...pinCount))
         }
         for kind in [MultiUnitChip.dualBCD, .dualBinary] {
             bench.addNextUnit(for: kind)

@@ -3,16 +3,32 @@ import SwiftUI
 struct ComponentLibraryView: View {
     let bench: Workbench
     let placeNewPart: (Int) -> Void
+    let showOscilloscope: () -> Void
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var searchFocused: Bool
     @State private var search = ""
     @State private var selection: Entry?
-    @State private var chipsExpanded = true
-    @State private var discreteExpanded = true
-    @State private var sourcesExpanded = true
+    @State private var collapsed: Set<Family> = []
+
+    private enum Family: String, CaseIterable, Identifiable {
+        case cmos4000 = "4000 Series CMOS"
+        case hc = "74HC Series CMOS"
+        case ls = "74LS Series TTL"
+        case discrete = "Discrete Semiconductors"
+        case passives = "Passive Components"
+        case switches = "Switches"
+        case displays = "Displays"
+        case sources = "Sources"
+        case instruments = "Instruments"
+        case timers = "Timers"
+        case connectors = "Connectors"
+
+        var id: Self { self }
+    }
 
     private enum Entry: Hashable, Identifiable {
+        case hcPackage(HCGatePackage)
         case chip(MultiUnitChip)
         case chipPower(MultiUnitChip, Int, String)
         case displayDriver(SevenSegmentDriverKind)
@@ -22,7 +38,7 @@ struct ComponentLibraryView: View {
         case analogSwitch(AnalogSwitchKind)
         case capacitor(CapacitorKind)
         case pinHeader(PinHeaderKind)
-        case cd4011, cd40106, cd4027, cd4070, cd4081, cd4518, timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, oscillatorDIP8, led, led3mm, pullUp
+        case cd4011, cd40106, cd4027, cd4070, cd4081, hc08, cd4518, timer555, counter, rippleCounter, transistor, resistor, diode, logicSwitch, logicInput, clock, oscillatorDIP8, led, led3mm, mechanicalSwitch, oscilloscope
 
         var id: Self { self }
 
@@ -37,6 +53,8 @@ struct ComponentLibraryView: View {
             case .cd4518: "CD4518 Package"
             case .cd4070: "CD4070"
             case .cd4081: "CD4081 Package"
+            case .hc08: "74HC08 Package"
+            case .hcPackage(let package): "\(package.rawValue) Package"
             case .timer555: "NE555"
             case .counter: "CD4510"
             case .additionalCounter(let kind): kind.rawValue
@@ -50,7 +68,7 @@ struct ComponentLibraryView: View {
             case .pinHeader(let kind): kind.name
             case .resistor: "R_Small"
             case .diode: "1N4148"
-            case .pullUp: "Logic Pull-up"
+            case .mechanicalSwitch: "Switch"
             case .power(let rail): rail.rawValue
             case .logicSwitch: "Logic Switch"
             case .logicInput: "Logic Input"
@@ -58,6 +76,7 @@ struct ComponentLibraryView: View {
             case .oscillatorDIP8: "CXO_DIP8"
             case .led: "Logic LED"
             case .led3mm: "LED_D3.0mm"
+            case .oscilloscope: "Oscilloscope"
             }
         }
 
@@ -65,13 +84,16 @@ struct ComponentLibraryView: View {
             switch self {
             case .chip(.xor): "Individually placed XOR gate"
             case .chip(let kind): kind.unitName
+            case .chipPower(let kind, _, _) where kind.is74HC: "Shared Power Unit · VCC / GND"
             case .chipPower: "Shared Power Unit · VDD / VSS"
             case .cd4011: "Four NAND gates and power · Switchable DIP-14"
             case .cd40106: "Six Schmitt-trigger inverters and power · Switchable DIP-14"
             case .cd4027: "Two J-K flip-flops and power · Switchable DIP-16"
             case .cd4518: "Two BCD counters and power · Switchable DIP-16"
             case .cd4070: "Four XOR gates and power · Switchable DIP-14"
-            case .cd4081: "Four AND gates and power · Switchable DIP-14"
+            case .hcPackage(let package):
+                "\(MultiUnitChip(package).unitName) units and power · Switchable DIP-14"
+            case .cd4081, .hc08: "Four AND gates and power · Switchable DIP-14"
             case .timer555: "Timer · Digital inputs or standard RC astable/monostable"
             case .counter: "BCD Up/Down Counter"
             case .additionalCounter(let kind): kind.detail
@@ -85,7 +107,7 @@ struct ComponentLibraryView: View {
             case .pinHeader(let kind): "Vertical · 2.54 mm · \(kind.footprint)"
             case .resistor: "Resistor"
             case .diode: "Switching Diode"
-            case .pullUp: "Weak HIGH for open-collector outputs"
+            case .mechanicalSwitch: "Normally Open Push Button · Selectable SPDT"
             case .power(.fiveVolts): "Power supply · Logic HIGH"
             case .power(.ground): "Ground · Logic LOW"
             case .logicSwitch: "Manual HIGH or LOW output"
@@ -93,21 +115,22 @@ struct ComponentLibraryView: View {
             case .clock: "Square wave · Hz, kHz, or MHz"
             case .oscillatorDIP8: "Crystal oscillator · kHz or MHz"
             case .led: "Digital state indicator"
+            case .oscilloscope: "Open the workbench instrument"
             case .led3mm: "3 mm through-hole LED · \(LED3mm.footprint)"
             }
         }
 
         var icon: String {
             switch self {
-            case .chip, .chipPower, .cd4011, .cd40106, .cd4027, .cd4070, .cd4081, .cd4518, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
+            case .hcPackage, .chip, .chipPower, .cd4011, .cd40106, .cd4027, .cd4070, .cd4081, .hc08, .cd4518, .timer555, .counter, .rippleCounter, .displayDriver, .additionalCounter, .analogSwitch: "cpu"
             case .transistor: "circle.branch"
             case .pinHeader: "circle.grid.2x2"
             case .capacitor, .resistor, .diode: "point.topleft.down.to.point.bottomright.curvepath"
-            case .pullUp, .power(.fiveVolts): "arrow.up"
+            case .power(.fiveVolts): "arrow.up"
             case .power(.ground): "arrow.down"
-            case .logicSwitch: "switch.2"
+            case .logicSwitch, .mechanicalSwitch: "switch.2"
             case .logicInput: "0.square"
-            case .clock, .oscillatorDIP8: "waveform.path"
+            case .clock, .oscillatorDIP8, .oscilloscope: "waveform.path"
             case .led, .led3mm: "lightbulb"
             case .sevenSegmentDisplay, .commonAnodeDisplay: "number.square"
             }
@@ -121,30 +144,47 @@ struct ComponentLibraryView: View {
         }
     }
 
-    private var chips: [Entry] {
-        (MultiUnitChip.allCases.map(Entry.chip) + [.cd4011, .cd40106, .cd4027, .cd4070, .cd4081, .cd4518, .timer555, .counter, .rippleCounter]
-            + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
-            + CounterChip.allCases.map(Entry.additionalCounter)
-            + AnalogSwitchKind.allCases.map(Entry.analogSwitch)
-            + MultiUnitChip.allCases.flatMap { kind in
-                bench.packages(for: kind).filter {
-                    bench.availableUnits(in: $0, kind: kind).contains(kind.powerUnit)
-                }.map { package in
-                    let unit = ChipUnitPlacement(kind: kind, packageID: package, unit: kind.powerUnit)
-                    return Entry.chipPower(kind, package, bench.reference(for: unit))
-                }
-            })
-            .sorted { $0.name < $1.name }
-            .filter { $0.matches(search) }
+    private func chipEntries(_ kinds: [MultiUnitChip]) -> [Entry] {
+        kinds.flatMap { kind in
+            [.chip(kind)] + bench.packages(for: kind).compactMap { package in
+                guard bench.availableUnits(in: package, kind: kind).contains(kind.powerUnit) else { return nil }
+                let unit = ChipUnitPlacement(kind: kind, packageID: package, unit: kind.powerUnit)
+                return .chipPower(kind, package, bench.reference(for: unit))
+            }
+        }
     }
 
-    private var discreteComponents: [Entry] {
-        ([Entry.transistor, .resistor, .diode, .capacitor(.polarized), .capacitor(.small)]
-            + PinHeaderKind.allCases.map(Entry.pinHeader)).filter { $0.matches(search) }
+    private func entries(in family: Family) -> [Entry] {
+        let entries: [Entry]
+        switch family {
+        case .cmos4000:
+            entries = chipEntries(MultiUnitChip.allCases.filter { !$0.is74HC })
+                + [.cd4011, .cd40106, .cd4027, .cd4070, .cd4081, .cd4518, .counter, .rippleCounter]
+                + SevenSegmentDriverKind.allCases.map(Entry.displayDriver)
+                + CounterChip.allCases.filter { !$0.isTTL }.map(Entry.additionalCounter)
+                + AnalogSwitchKind.allCases.map(Entry.analogSwitch)
+        case .hc:
+            let kinds = MultiUnitChip.allCases.filter(\.is74HC)
+            entries = chipEntries(kinds) + [.hc08] + kinds.compactMap { $0.hcPackage.map(Entry.hcPackage) }
+        case .ls: entries = CounterChip.allCases.filter(\.isTTL).map(Entry.additionalCounter)
+        case .discrete: entries = [.transistor, .diode, .led3mm]
+        case .passives: entries = [.resistor, .capacitor(.polarized), .capacitor(.small)]
+        case .switches: entries = [.mechanicalSwitch, .logicSwitch]
+        case .displays: entries = [.led, .sevenSegmentDisplay, .commonAnodeDisplay]
+        case .sources: entries = [.power(.fiveVolts), .power(.ground), .logicInput, .clock, .oscillatorDIP8]
+        case .instruments: entries = [.oscilloscope]
+        case .timers: entries = [.timer555]
+        case .connectors: entries = PinHeaderKind.allCases.map(Entry.pinHeader)
+        }
+        return entries.filter { $0.matches(search) }.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
-    private var sourcesAndIndicators: [Entry] {
-        [Entry.power(.fiveVolts), .power(.ground), .logicSwitch, .logicInput, .clock, .oscillatorDIP8, .led, .led3mm, .sevenSegmentDisplay, .commonAnodeDisplay, .pullUp].filter { $0.matches(search) }
+    private func expanded(_ family: Family) -> Binding<Bool> {
+        Binding(get: { !collapsed.contains(family) }, set: { isExpanded in
+            if isExpanded { collapsed.remove(family) } else { collapsed.insert(family) }
+        })
     }
 
     var body: some View {
@@ -158,9 +198,7 @@ struct ComponentLibraryView: View {
                 .focused($searchFocused)
                 .onChange(of: search) {
                     if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        chipsExpanded = true
-                        discreteExpanded = true
-                        sourcesExpanded = true
+                        collapsed.removeAll()
                     }
                     if selection?.matches(search) != true {
                         selection = nil
@@ -168,19 +206,16 @@ struct ComponentLibraryView: View {
                 }
 
             List(selection: $selection) {
-                if !chips.isEmpty {
-                    Section("Chips", isExpanded: $chipsExpanded) { rows(chips) }
-                }
-                if !discreteComponents.isEmpty {
-                    Section("Discrete Components", isExpanded: $discreteExpanded) { rows(discreteComponents) }
-                }
-                if !sourcesAndIndicators.isEmpty {
-                    Section("Sources and Indicators", isExpanded: $sourcesExpanded) { rows(sourcesAndIndicators) }
+                ForEach(Family.allCases) { family in
+                    let matches = entries(in: family)
+                    if !matches.isEmpty {
+                        Section(family.rawValue, isExpanded: expanded(family)) { rows(matches) }
+                    }
                 }
             }
             .listStyle(.sidebar)
             .overlay {
-                if chips.isEmpty && discreteComponents.isEmpty && sourcesAndIndicators.isEmpty {
+                if Family.allCases.allSatisfy({ entries(in: $0).isEmpty }) {
                     ContentUnavailableView("No Matching Components", systemImage: "magnifyingglass")
                 }
             }
@@ -194,7 +229,7 @@ struct ComponentLibraryView: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Add", action: addSelection)
+                Button(selection == .oscilloscope ? "Open" : "Add", action: addSelection)
                     .keyboardShortcut(.defaultAction)
                     .disabled(selection == nil)
             }
@@ -226,6 +261,10 @@ struct ComponentLibraryView: View {
 
         let previousID = bench.parts.last?.id
         switch selection {
+        case .oscilloscope:
+            dismiss()
+            showOscilloscope()
+            return
         case .chip(let kind):
             bench.addNextUnit(for: kind)
         case .chipPower(let kind, let package, _):
@@ -244,6 +283,10 @@ struct ComponentLibraryView: View {
             bench.add("CD4027", component: CD4027())
         case .cd4070:
             bench.add("CD4070", component: CD4070())
+        case .hc08:
+            bench.add("74HC08", component: SN74HC08())
+        case .hcPackage(let package):
+            bench.add(package.rawValue, component: package.makeComponent())
         case .cd4081:
             bench.add("CD4081", component: CD4081())
         case .timer555:
@@ -270,8 +313,8 @@ struct ComponentLibraryView: View {
             bench.add("1N4148", component: Diode1N4148())
         case .power(let rail):
             bench.add(rail.rawValue, component: WorkbenchPower(rail))
-        case .pullUp:
-            bench.add("Pull-up", component: WorkbenchPullUp())
+        case .mechanicalSwitch:
+            bench.add("Switch", component: MechanicalSwitch())
         case .logicSwitch:
             bench.add("Switch", component: WorkbenchSwitch())
         case .logicInput:

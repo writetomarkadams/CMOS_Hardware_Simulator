@@ -14,6 +14,13 @@ struct WorkbenchTerminal: Hashable, Codable {
 
 enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     case and = "4081"
+    case hc00 = "74HC00"
+    case hc02 = "74HC02"
+    case hc04 = "74HC04"
+    case hc08 = "74HC08"
+    case hc14 = "74HC14"
+    case hc32 = "74HC32"
+    case hc86 = "74HC86"
     case nand = "4011"
     case or = "4071"
     case xor = "4070"
@@ -23,14 +30,22 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     case dualBinary = "4520"
 
     var id: String { rawValue }
-    var partName: String { "CD\(rawValue)" }
+    var hcPackage: HCGatePackage? { HCGatePackage(rawValue: rawValue) }
+
+    init(_ package: HCGatePackage) { self = Self(rawValue: package.rawValue)! }
+
+    var is74HC: Bool { rawValue.hasPrefix("74HC") }
+    var partName: String { is74HC ? rawValue : "CD\(rawValue)" }
 
     var unitName: String {
         switch self {
-        case .and: "AND Gate"
-        case .nand: "NAND Gate"
-        case .or: "OR Gate"
-        case .xor: "XOR Gate"
+        case .and, .hc08: "AND Gate"
+        case .nand, .hc00: "NAND Gate"
+        case .hc02: "NOR Gate"
+        case .hc04: "Inverter"
+        case .hc14: "Schmitt Inverter (digital only)"
+        case .or, .hc32: "OR Gate"
+        case .xor, .hc86: "XOR Gate"
         case .jk: "JK Flip-Flop"
         case .inverter: "Schmitt Inverter"
         case .dualBCD: "Dual BCD Counter"
@@ -41,6 +56,8 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
     func makeComponent() -> any LogicComponent {
         switch self {
         case .and: CD4081()
+        case .hc08: SN74HC08()
+        case .hc00, .hc02, .hc04, .hc14, .hc32, .hc86: hcPackage!.makeComponent()
         case .nand: CD4011()
         case .or: CD4071()
         case .xor: CD4070()
@@ -60,7 +77,16 @@ enum MultiUnitChip: String, CaseIterable, Identifiable, Codable {
 
     var units: [ChipUnit] {
         switch self {
-        case .and, .nand, .or, .xor: QuadGate.allCases.map { ChipUnit(id: $0.rawValue, pinNumbers: $0.pinNumbers) }
+        case .and, .nand, .or, .xor, .hc00, .hc02, .hc08, .hc32, .hc86:
+            QuadGate.allCases.map { gate in
+                let (a, b, y) = hcPackage?.quadTerminals(gate) ??
+                    (self == .hc08 ? SN74HC08.terminals(gate) : gate.terminals)
+                return ChipUnit(id: gate.rawValue, pinNumbers: [a, b, y].sorted())
+            }
+        case .hc04, .hc14:
+            HCGatePackage.inverterTerminals.enumerated().map { index, pair in
+                ChipUnit(id: index + 1, pinNumbers: [pair.input, pair.output].sorted())
+            }
         case .jk, .dualBCD, .dualBinary: [ChipUnit(id: 1, pinNumbers: Array(1...7)), ChipUnit(id: 2, pinNumbers: Array(9...15))]
         case .inverter:
             CD40106.gatePins.enumerated().map { index, pair in
@@ -120,6 +146,7 @@ struct WorkbenchPart: Identifiable {
         if component is Capacitor { return "C\(id)" }
         if component is Resistor { return "R\(id)" }
         if component is Diode1N4148 || component is LED3mm { return "D\(id)" }
+        if component is MechanicalSwitch { return "SW\(id)" }
         if component is Transistor { return "Q\(id)" }
         return nil
     }
@@ -886,6 +913,49 @@ final class Workbench {
               Capacitor.isValid(value, kind: capacitor.kind), value != capacitor.value else { return }
         recordEdit()
         capacitor.setCapacitance(value)
+        settle()
+    }
+
+    func canSetSwitchDesignation(_ designation: SwitchDesignation, for id: Int) -> Bool {
+        guard let part = parts.first(where: { $0.id == id }),
+              let contact = part.component as? MechanicalSwitch else { return false }
+        return contact.designation == designation || (part.importedSymbol == nil &&
+            !wires.contains { $0.first.partID == id || $0.second.partID == id })
+    }
+
+    func setSwitchDesignation(_ designation: SwitchDesignation, for id: Int) {
+        guard let index = parts.firstIndex(where: { $0.id == id }),
+              let contact = parts[index].component as? MechanicalSwitch,
+              contact.designation != designation, canSetSwitchDesignation(designation, for: id) else { return }
+        let part = parts[index]
+        recordEdit()
+        parts[index] = WorkbenchPart(id: id, name: part.name, component: MechanicalSwitch(designation),
+                                     unitPlacement: part.unitPlacement, chipNumber: part.chipNumber,
+                                     importedReference: part.importedReference, designation: part.designation)
+        cancelWire()
+        rebuildNets()
+    }
+
+    func setPressed(_ pressed: Bool, for contact: MechanicalSwitch) {
+        guard contact.designation == .pushButton, contact.isPressed != pressed,
+              parts.contains(where: { $0.component === contact }) else { return }
+        contact.setPressed(pressed)
+        settle()
+    }
+
+    @discardableResult
+    func releasePressedSwitches() -> Bool {
+        let pressed = parts.compactMap { $0.component as? MechanicalSwitch }.filter(\.isPressed)
+        guard !pressed.isEmpty else { return false }
+        for contact in pressed { contact.setPressed(false) }
+        settle()
+        return true
+    }
+
+    func toggleContact(_ contact: MechanicalSwitch) {
+        guard contact.designation == .spdt, parts.contains(where: { $0.component === contact }) else { return }
+        recordEdit()
+        contact.toggle()
         settle()
     }
 

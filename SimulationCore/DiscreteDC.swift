@@ -10,7 +10,8 @@ struct DiscreteDC {
         let nodes: [Int]
     }
 
-    static func apply(components: [any LogicComponent], nets: [Net]) -> Set<ObjectIdentifier> {
+    static func apply(components: [any LogicComponent], nets: [Net],
+                      excludedTerminals: Set<ObjectIdentifier> = []) -> Set<ObjectIdentifier> {
         let hasLED = components.contains { $0 is LED3mm }
         let hasLegacyNetwork = components.contains { $0 is Transistor } && components.contains { $0 is Diode1N4148 }
         guard hasLED || hasLegacyNetwork else { return [] }
@@ -18,6 +19,7 @@ struct DiscreteDC {
         for (index, net) in nets.enumerated() {
             for pin in net.pins { byPin[ObjectIdentifier(pin)] = index }
         }
+        let switchedNodes = Set(excludedTerminals.compactMap { byPin[$0] })
         var digitalCollectors: Set<Int> = []
         var regions: [(nodes: Set<Int>, devices: [Device])] = []
         for component in components {
@@ -64,7 +66,8 @@ struct DiscreteDC {
         var modeled: Set<ObjectIdentifier> = []
         for (nodes, devices) in regions {
             // A digital-only collector cannot serve as a DC voltage source.
-            guard nodes.isDisjoint(with: digitalCollectors) else { continue }
+            guard nodes.isDisjoint(with: digitalCollectors),
+                  devices.allSatisfy({ Set($0.nodes).isDisjoint(with: switchedNodes) }) else { continue }
             let hasLED = devices.contains { if case .led = $0.kind { true } else { false } }
             let hasLegacyNetwork = devices.contains { if case .diode = $0.kind { true } else { false } } &&
                 devices.contains { if case .transistor = $0.kind { true } else { false } }

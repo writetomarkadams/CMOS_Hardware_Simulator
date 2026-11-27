@@ -179,3 +179,65 @@ struct DiscreteDCTests {
         #expect(output.state == .high)
     }
 }
+
+extension DiscreteDCTests {
+    @Test("Series 2N3904 NAND follows live SPDT inputs", arguments: [true, false])
+    func seriesNPNNAND(connectLowerHighThrow: Bool) {
+        let engine = SimulationEngine()
+        let high = WorkbenchPower(.fiveVolts), ground = WorkbenchPower(.ground)
+        let upper = Transistor(), lower = Transistor()
+        let a = MechanicalSwitch(.spdt), b = MechanicalSwitch(.spdt)
+        let feedA = Resistor(), feedB = Resistor(), pullUp = Resistor()
+        for feed in [feedA, feedB] { feed.setResistance(10, unit: .kilohms) }
+        pullUp.setResistance(820, unit: .ohms)
+        let parts: [any LogicComponent] = [high, ground, upper, lower, a, b, feedA, feedB, pullUp]
+        for part in parts { engine.addComponent(part) }
+
+        @discardableResult
+        func wire(_ name: String, _ pins: Pin...) -> Net {
+            let net = Net(name: name)
+            for pin in pins { net.connect(pin) }
+            engine.addNet(net)
+            return net
+        }
+
+        let supply = wire("+5 V", high.pins[1]!, pullUp.pins[1]!, a.pins[3]!)
+        if connectLowerHighThrow { supply.connect(b.pins[3]!) }
+        wire("GND", ground.pins[1]!, lower.pins[1]!, a.pins[1]!, b.pins[1]!)
+        wire("A common", a.pins[2]!, feedA.pins[1]!)
+        wire("B common", b.pins[2]!, feedB.pins[1]!)
+        wire("Upper base", feedA.pins[2]!, upper.pins[2]!)
+        wire("Lower base", feedB.pins[2]!, lower.pins[2]!)
+        let midpoint = wire("Series junction", upper.pins[1]!, lower.pins[3]!)
+        let output = wire("NAND output", pullUp.pins[2]!, upper.pins[3]!)
+
+        if !connectLowerHighThrow {
+            a.toggle()
+            #expect(engine.settle())
+            #expect(output.state == .high)
+            b.toggle()
+            #expect(engine.settle())
+            #expect(lower.pin(.base).state == .highImpedance)
+            #expect(output.state == .undefined)
+            return
+        }
+
+        let cases: [(Bool, Bool, LogicState)] = [
+            (false, false, .high), (true, false, .high), (true, true, .low),
+            (false, true, .high), (true, true, .low), (true, false, .high)
+        ]
+        for (upperHigh, lowerHigh, expected) in cases {
+            if a.selectsThrow3 != upperHigh { a.toggle() }
+            if b.selectsThrow3 != lowerHigh { b.toggle() }
+            #expect(engine.settle())
+            #expect(output.state == expected, "Upper: \(upperHigh), lower: \(lowerHigh)")
+            #expect(midpoint.state == (lowerHigh ? .low : .highImpedance))
+            #expect(output.dcVoltage == nil)
+        }
+
+        // A third connection makes the midpoint a different topology.
+        midpoint.connect(Pin(number: 1, name: "External connection", direction: .input))
+        #expect(engine.settle())
+        #expect(output.state == .undefined)
+    }
+}

@@ -32,7 +32,7 @@ protocol LogicComponent: AnyObject {
 
 
 // A closed connection joins terminals without driving either terminal.
-protocol SwitchedConnectivity: PoweredChip {
+protocol SwitchedConnectivity: LogicComponent {
     var closedConnections: [(Pin, Pin)] { get }
 }
 
@@ -97,7 +97,7 @@ final class SimulationEngine {
         if let device = component as? any SwitchedConnectivity {
             switches.append(device)
         }
-        for pin in component.pins.values where pin.direction != .input {
+        for pin in component.pins.values where pin.direction != .input && pin.direction != .noConnect {
             drivenPins.append(pin)
             previousStates.append(pin.driveState)
         }
@@ -130,12 +130,16 @@ final class SimulationEngine {
             }
         }
 
+        let mechanicalTerminals = Set(switches.compactMap { $0 as? MechanicalSwitch }
+            .flatMap { $0.pins.values.map(ObjectIdentifier.init) })
+        let lowerTransistorByUpper = seriesNPNPairs()
         var links: [NetLink] = []
         resolve(electricalNets, links: links)
         timing.configure(components: components, nets: nets, automaticPower: automaticallyPowerChips)
         for _ in 0..<maximumIterations {
             let nextLinks = switches.flatMap { device -> [NetLink] in
-                guard automaticallyPowerChips || device.powerState == .powered else { return [] }
+                if let chip = device as? any PoweredChip,
+                   !automaticallyPowerChips, chip.powerState != .powered { return [] }
                 return device.closedConnections.map { first, second in
                     NetLink(first: netByPin[ObjectIdentifier(first)]!, second: netByPin[ObjectIdentifier(second)]!)
                 }
@@ -149,7 +153,9 @@ final class SimulationEngine {
             for index in drivenPins.indices {
                 previousStates[index] = drivenPins[index].driveState
             }
-            let modeled = switches.isEmpty ? DiscreteDC.apply(components: components, nets: nets) : []
+            let modeled = switches.contains { $0 is AnalogSwitch } ? [] : DiscreteDC.apply(
+                components: components, nets: nets, excludedTerminals: mechanicalTerminals
+            )
             timing.prepareInputs()
             onEvaluationPass?()
             for component in components where !modeled.contains(ObjectIdentifier(component)) {
@@ -159,8 +165,16 @@ final class SimulationEngine {
                     }
                     if !(chip is any SwitchedConnectivity) { chip.disableOutputs() }
                 } else {
-                    unpoweredChips.remove(ObjectIdentifier(component))
-                    component.evaluate()
+                    let id = ObjectIdentifier(component)
+                    unpoweredChips.remove(id)
+                    if let upper = component as? Transistor, let lower = lowerTransistorByUpper[id] {
+                        let emitter = lower.pin(.emitter)
+                        let lowerIsOff = emitter.supplyRail == .ground && emitter.state == .low &&
+                            lower.pin(.base).state == .low
+                        upper.evaluate(seriesPathOpen: lowerIsOff)
+                    } else {
+                        component.evaluate()
+                    }
                 }
             }
 
@@ -176,6 +190,30 @@ final class SimulationEngine {
 
         print("WARNING: Simulation did not settle.")
         return false
+    }
+
+    private func seriesNPNPairs() -> [ObjectIdentifier: Transistor] {
+        let devices = components.compactMap { $0 as? Transistor }
+            .filter { $0.designation == .twoN3904 }
+        guard devices.count >= 2 else { return [:] }
+
+        var emitters: [ObjectIdentifier: Transistor] = [:]
+        var collectors: [ObjectIdentifier: Transistor] = [:]
+        for device in devices {
+            emitters[ObjectIdentifier(device.pin(.emitter))] = device
+            collectors[ObjectIdentifier(device.pin(.collector))] = device
+        }
+        var lowerByUpper: [ObjectIdentifier: Transistor] = [:]
+        // A third pin can load or switch the midpoint, so only accept a direct pair.
+        for net in nets where net.pins.count == 2 {
+            let first = ObjectIdentifier(net.pins[0])
+            let second = ObjectIdentifier(net.pins[1])
+            guard let upper = emitters[first] ?? emitters[second],
+                  let lower = collectors[first] ?? collectors[second],
+                  upper !== lower else { continue }
+            lowerByUpper[ObjectIdentifier(upper)] = lower
+        }
+        return lowerByUpper
     }
 
     private func resolve(_ nets: [Net], links: [NetLink]) {

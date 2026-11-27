@@ -103,6 +103,8 @@ struct SchematicPartGeometry {
         case let counter as DualCounter where counter.kind == .bcd: packageKind = .dualBCD
         case is CD4070: packageKind = .xor
         case is CD4081: packageKind = .and
+        case is SN74HC08: packageKind = .hc08
+        case let chip as any HCGateChip: packageKind = MultiUnitChip(chip.package)
         case is CD40106: packageKind = .inverter
         default: packageKind = nil
         }
@@ -221,6 +223,7 @@ extension WorkbenchPart {
         let symbol: KiCadSymbol?
         switch component {
         case let header as PinHeader: symbol = KiCadSymbol.pinHeaders[header.kind]
+        case let device as MechanicalSwitch: symbol = KiCadSymbol.mechanicalSwitches[device.designation]
         case let device as AnalogSwitch: symbol = KiCadSymbol.analogSwitches[device.kind]
         case is NE555: symbol = KiCadSymbol.ne555
         case is CD4510: symbol = KiCadSymbol.counter

@@ -3,12 +3,15 @@ import UniformTypeIdentifiers
 
 struct WorkbenchArchive: Codable, FileDocument {
     private enum Component: Codable {
+        case hc08
+        case hcPackage(HCGatePackage)
         case oscillatorDIP8, led3mm, cd4070, cd40106, cd4011, cd4027, cd4081, cd4518
         case unit(MultiUnitChip, package: Int, unit: Int)
         case timer555, counter, divider, display, displayMAN72A, transistor, diode, led, pullUp, clock
         case driver(SevenSegmentDriverKind)
         case additionalCounter(CounterChip)
         case analogSwitch(AnalogSwitchKind)
+        case mechanicalSwitch(SwitchDesignation, selectsThrow3: Bool)
         case pinHeader(PinHeaderKind)
         case resistance(Double, ResistanceUnit)
         case capacitance(CapacitorKind, Double)
@@ -26,6 +29,7 @@ struct WorkbenchArchive: Codable, FileDocument {
             }
             switch part.component {
             case let header as PinHeader: self = .pinHeader(header.kind)
+            case let contact as MechanicalSwitch: self = .mechanicalSwitch(contact.designation, selectsThrow3: contact.selectsThrow3)
             case let device as AnalogSwitch: self = .analogSwitch(device.kind)
             case is CD4011: self = .cd4011
             case is CD40106: self = .cd40106
@@ -33,6 +37,8 @@ struct WorkbenchArchive: Codable, FileDocument {
             case let counter as DualCounter where counter.kind == .bcd: self = .cd4518
             case is CD4070: self = .cd4070
             case is CD4081: self = .cd4081
+            case is SN74HC08: self = .hc08
+            case let chip as any HCGateChip: self = .hcPackage(chip.package)
             case is NE555: self = .timer555
             case is CD4510: self = .counter
             case is CD4060: self = .divider
@@ -172,6 +178,8 @@ struct WorkbenchArchive: Codable, FileDocument {
                 placement = ChipUnitPlacement(kind: kind, packageID: packageID, unit: unit)
             case .additionalCounter(let kind): component = kind.makeComponent()
             case .pinHeader(let kind): component = PinHeader(kind)
+            case .mechanicalSwitch(let designation, let selectsThrow3):
+                component = MechanicalSwitch(designation, selectsThrow3: selectsThrow3)
             case .analogSwitch(let kind): component = AnalogSwitch(kind)
             case .cd4011: component = CD4011()
             case .cd40106: component = CD40106()
@@ -179,6 +187,8 @@ struct WorkbenchArchive: Codable, FileDocument {
             case .cd4518: component = DualCounter(.bcd)
             case .cd4070: component = CD4070()
             case .cd4081: component = CD4081()
+            case .hc08: component = SN74HC08()
+            case .hcPackage(let package): component = package.makeComponent()
             case .timer555: component = NE555()
             case .counter: component = CD4510()
             case .divider: component = CD4060()

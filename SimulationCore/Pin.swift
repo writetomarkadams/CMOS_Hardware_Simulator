@@ -4,6 +4,7 @@ enum PinDirection {
     case output
     case bidirectional
     case power
+    case noConnect
 }
 
 final class Pin: Identifiable {
@@ -13,6 +14,7 @@ final class Pin: Identifiable {
     let isWeakDriver: Bool
     var drivenSupplyRail: SupplyRail?
     private(set) var supplyRail: SupplyRail?
+    private(set) var dcVoltage: Double?
 
     // The logic level this pin actively drives.
     // HIGH-Z means it is not driving the net.
@@ -54,9 +56,10 @@ final class Pin: Identifiable {
     }
 
     // Update the logic level observed at this pin.
-    func receive(_ newState: LogicState, strongState: LogicState? = nil, supplyRail: SupplyRail? = nil) {
+    func receive(_ newState: LogicState, strongState: LogicState? = nil, supplyRail: SupplyRail? = nil, dcVoltage: Double? = nil) {
         state = newState
         self.supplyRail = supplyRail
+        self.dcVoltage = dcVoltage
         self.strongState = strongState ?? newState
     }
 }
