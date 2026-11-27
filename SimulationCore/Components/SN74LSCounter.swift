@@ -9,8 +9,13 @@ final class SN74LSCounter: PoweredChip {
     private let sequenceB: [Int]
     private let edgeA = ClockEdgeDetector()
     private let edgeB = ClockEdgeDetector()
-    private var countA: Int?
-    private var countB: Int?
+    private struct Count: Hashable {
+        let a: Int
+        let bIndex: Int
+    }
+
+    private let possibleCounts: Set<Count>
+    private var candidates: Set<Count>
 
     init(_ kind: CounterChip) {
         self.kind = kind
@@ -31,6 +36,12 @@ final class SN74LSCounter: PoweredChip {
             preconditionFailure("An SN74LS counter designation is required")
         }
 
+        let possibleCounts = Set(sequenceB.indices.flatMap { index in
+            [Count(a: 0, bIndex: index), Count(a: 1, bIndex: index)]
+        })
+        self.possibleCounts = possibleCounts
+        candidates = possibleCounts
+
         let inputs = [(1, "CKB"), (14, "CKA"), (resetPins.0, "R0(1)"), (resetPins.1, "R0(2)")]
             + (kind == .ls90 ? [(6, "R9(1)"), (7, "R9(2)")] : [])
         let outputs = [(12, "QA")] + Array(zip(outputsB, ["QB", "QC", "QD"]))
@@ -47,8 +58,7 @@ final class SN74LSCounter: PoweredChip {
     }
 
     func powerDidFail() {
-        countA = nil
-        countB = nil
+        candidates = possibleCounts
         edgeA.reset()
         edgeB.reset()
     }
@@ -61,24 +71,36 @@ final class SN74LSCounter: PoweredChip {
         let reset = asserted(resetPins.0, resetPins.1)
         let preset = kind == .ls90 ? asserted(6, 7) : .low
 
-        if preset == .high {
-            countA = 1
-            countB = 4
-        } else if preset == .low && reset == .high {
-            countA = 0
-            countB = 0
-        } else if preset == .low && reset == .low {
-            if transitionA == .falling, let countA { self.countA = 1 - countA }
-            if transitionB == .falling, let countB { self.countB = (countB + 1) % sequenceB.count }
-        } else {
-            countA = nil
-            countB = nil
+        // Include each feasible control outcome as a whole package state.
+        // A definite preset excludes both reset and normal counting.
+        var next: Set<Count> = []
+        if preset != .low { next.insert(Count(a: 1, bIndex: 4)) }
+        if preset != .high && reset != .low { next.insert(Count(a: 0, bIndex: 0)) }
+        if preset != .high && reset != .high {
+            if transitionA == .falling || transitionB == .falling {
+                next.formUnion(candidates.map { count in
+                    Count(
+                        a: transitionA == .falling ? 1 - count.a : count.a,
+                        bIndex: transitionB == .falling ? (count.bIndex + 1) % sequenceB.count : count.bIndex
+                    )
+                })
+            } else {
+                next.formUnion(candidates)
+            }
         }
+        candidates = next
 
-        pins[12]!.drive(bit(countA, at: 0))
-        let patternB = countB.map { sequenceB[$0] }
-        for (index, number) in outputsB.enumerated() {
-            pins[number]!.drive(bit(patternB, at: index))
+        var allHigh = 0b1111
+        var anyHigh = 0
+        for count in candidates {
+            let word = (sequenceB[count.bIndex] << 1) | count.a
+            allHigh &= word
+            anyHigh |= word
+        }
+        for (index, pin) in ([12] + outputsB).enumerated() {
+            let mask = 1 << index
+            let state: LogicState = allHigh & mask != 0 ? .high : anyHigh & mask == 0 ? .low : .undefined
+            pins[pin]!.drive(state)
         }
     }
 
@@ -88,10 +110,5 @@ final class SN74LSCounter: PoweredChip {
         let b = pins[second]!.state
         if a == .low || b == .low { return .low }
         return a == .high && b == .high ? .high : .undefined
-    }
-
-    private func bit(_ pattern: Int?, at index: Int) -> LogicState {
-        guard let pattern else { return .undefined }
-        return pattern & (1 << index) == 0 ? .low : .high
     }
 }

@@ -4,7 +4,7 @@
 **Platform:** macOS / SwiftUI / Xcode  
 **Repository:** https://github.com/writetomarkadams/CMOS_Hardware_Simulator  
 **Branch:** main  
-**Last updated:** 27 November 2026\
+**Last updated:** 28 November 2026\
 **Project root:** /Users/mark.adams/Documents/GitHub/CMOS_Hardware_Simulator
 
 Use this project root for all development. Leave the previous project location untouched.
@@ -226,7 +226,7 @@ The CD4518 and CD4520 count on a rising CLOCK with ENABLE HIGH, or a falling ENA
 
 - Add **CD4029** from the Counters library. In Explicit Power mode, connect pin 16 to +5 V and pin 8 to GND. An asserted PRESET ENABLE (1) loads JAM1–JAM4 (4, 12, 13, 3) into Q1–Q4 (6, 11, 14, 2). To initialize at zero, drive all JAM inputs LOW and assert PRESET ENABLE.
 - Release PRESET ENABLE LOW to count on a rising CLOCK (15) with CARRY IN (5) held LOW. BINARY/DECADE (9) selects binary on HIGH and decade on LOW. UP/DOWN (10) selects up on HIGH and down on LOW. CARRY OUT (7) is LOW at the terminal count with CARRY IN LOW. For synchronous cascading, connect CARRY OUT to the next stage’s CARRY IN and share the clock.
-- A preset can load any four-bit pattern. Clocking from a value above nine in decade mode produces X in the simulator. Workbench Save/Open retains the device and wiring. KiCad import accepts `4xxx:4029` and `4xxx_IEEE:4029` using physical pin numbers. [TI CD4029B datasheet](https://www.ti.com/lit/ds/symlink/cd4029b.pdf)
+- A preset can load any four-bit pattern. An enabled decade count from a possible value above nine makes all Q bits X. Workbench Save/Open retains the device and wiring. KiCad import accepts `4xxx:4029` and `4xxx_IEEE:4029` using physical pin numbers. [TI CD4029B datasheet](https://www.ti.com/lit/ds/symlink/cd4029b.pdf)
 
 ### Display connections
 
@@ -280,19 +280,28 @@ Automatic Power assumes VDD at +5 V and VSS/VEE at ground. In Explicit Power, co
 
 ### Power-loss lifecycle
 
-The engine invokes the `powerDidFail()` hook when it first observes an unpowered chip. Sequential models use the hook to discard stored state and reset their edge detectors.
+The engine invokes the `powerDidFail()` hook when it first observes an unpowered chip. Sequential models use the hook to discard stored state and reset edge detectors where applicable.
 
 Implemented for:
 
 - CD4027
 - CD4029
+- CD4060
+- CD4510
 - CD4017
 - CD4026
 - CD4516
 - CD4518
 - CD4520
+- CD4511 and CD4543
+- NE555
+- SN74LS90, SN74LS92 and SN74LS93
 
-For these models, restoring power alone does not restore the previous count or flip-flop state. A valid RESET, SET, preset, or applicable clocked operation must establish a known state. CD4027 toggle mode cannot resolve an unknown prior state.
+A powered input operation can establish state after restoration. Counters
+and flip-flops use their supported reset, set, preset or clocked operations.
+CD4027 toggle mode cannot resolve an unknown prior state. CD4511 and CD4543
+recover by sampling BCD in transparent mode. In hold mode, powered output
+overrides can drive the segments while the stored code remains unknown.
 
 New files save the selected power mode. Older version-1 files reopen in Explicit Power mode, with gate supply wires migrated to a separate shared power unit.
 
@@ -387,10 +396,10 @@ Coverage includes:
 
 - Logic states, net resolution, gates, and clock-edge detection.
 - CD4071 physical pin mapping, all four gates with LOW/HIGH/X/HIGH-Z inputs, shared package allocation, KiCad symbols, Explicit and Automatic Power, downstream propagation, supply-loss Undo, and save/reopen.
-- CD4510 controls, carry behaviour, and synchronous cascading.
+- CD4510 controls, power-loss invalidation, reset and BCD preset recovery, high-clock restoration, carry behaviour, and synchronous cascading in both power modes.
 - CD4027 state loss, restoration with CLK already HIGH, downstream X propagation, and Automatic Power.
 - Shared package allocation, power units, supply validation, Undo, and older-file migration.
-- CD4511/CD4543 controls and wired seven-segment displays.
+- CD4511/CD4543 supply-loss invalidation, transparent recovery, hold, output overrides, invalid BCD blanking, wired seven-segment displays and downstream X.
 - MAN72A polarity, symbol pin mapping, CD4543 integration, and save/reopen.
 - New counter rollover, inhibit/enable behaviour, preset, RESET, carry cascading, power loss, symbols, and archive integration.
 - CD4051/CD4052/CD4053 selector combinations, inhibit, floating controls, two-way propagation, switch cascades, contention, weak pulls, power loss and restoration, symbol pin mapping, and Workbench save/reopen.
@@ -403,9 +412,15 @@ Check commit and push status before switching Macs.
 
 ## 7. Known Limitations and Next Development Tasks
 
-- Extend power-loss invalidation to CD4510, CD4060, and the CD4511/CD4543 latches.
-- Review CD4510 unknown-control handling and uncertain clock transitions as a separate stage.
-- Review uncertain clock handling across other sequential models. Existing edge detection recognises definite LOW→HIGH and HIGH→LOW transitions.
+- Phases 4B.1–4B.3 cover unknown and floating controls on CD4510,
+  CD4516, CD4029 and CD4060. Phase 4C.1 covers CD4017 and CD4026.
+  Phase 4C.2 covers CD4518 and CD4520. Phase 4D covers CD4027 JK
+  flip-flop control uncertainty. Phase 4E covers CD4511 and CD4543
+  display latch and output-control uncertainty. Phase 4F covers SN74LS90,
+  SN74LS92 and SN74LS93 asynchronous reset and preset uncertainty.
+- Phase 5 reviews uncertain clock transitions and simultaneous edge ordering.
+  Existing edge detection recognises definite LOW→HIGH and HIGH→LOW transitions.
+- Phase 6 reviews simulation convergence and feedback loops.
 - RC simulation is limited to the standard NE555 astable and monostable networks described above. Standalone or arbitrary RC networks, multiple timing capacitors, extra timing-node loads, routing through analog switches, leakage, ESR, tolerances, saturation voltage and general analog node voltages are not modelled. Unsupported timing wiring produces an orange warning and X (except asserted RESET still forces LOW).
 - Leave CONT open or bypass it to GND with a capacitor. Externally driven control voltages remain unsupported and produce X unless RESET is asserted. C_Small may be reversed; reversed C_Polarized timing capacitors are rejected. Timing resistor supply and capacitor reference connections require actual +5 V/GND rail sources, even in Automatic Power mode.
 - Recognised timing capacitors start at 0 V after circuit rewiring/reopening or power restoration; retained real-world charge is not modelled. Value edits preserve the current ideal voltage. RC timing-node voltages are used internally by the timer, not exported as general analog pin readings. Capacitors otherwise remain open circuits in digital simulation.
@@ -414,7 +429,7 @@ Check commit and push status before switching Macs.
 - The discrete DC operating-point model covers mixed diode and grounded-emitter transistor networks. General analog analysis, propagation delays, leakage, and back-powering remain future work.
 - Automatic supply voltage is currently fixed at 5 V.
 - High requested clock rates can exceed real-time processing capacity in larger circuits.
-- Build and verify the complete 12/24-hour clock incrementally against the reference KiCad schematic.
+- Phase 7 builds and verifies the complete 12/24-hour clock incrementally against the reference KiCad schematic.
 - Plan rotary encoder emulation for a future clock time-setting workflow.
 - Expand the KiCad symbol allowlist and use the shared import topology for future schematic-image inputs.
 - Track user-reported editing and simulation issues as circuits become more complex.
@@ -444,11 +459,479 @@ Push changes before switching computers and pull before editing on the other Mac
 
 ## 9. Current Session / Handoff Notes
 
-**Last confirmed milestone:** On 27 November 2026, the native arm64 macOS Debug build succeeded and all 209 tests passed across 41 suites at commit `0508b2b`. Coverage includes 74HC08 logic, SN74LS90/92/93 counters, mechanical switches, series transistor behaviour, and existing clock regressions.
+**Recorded baseline:** On 27 November 2026, the native arm64 macOS Debug build succeeded and all 209 tests passed across 41 suites at commit `0508b2b`. Coverage includes 74HC08 logic, SN74LS90/92/93 counters, mechanical switches, series transistor behaviour, and existing clock regressions.
+
+### CD4510 Phase 1 verification on 27 November 2026
+
+- The clean WORK Mac checkout at `af137a7` reproduced the `0508b2b` baseline
+  with 209 passing tests across 41 suites and 273 executions including parameterized
+  cases. The intervening commit changes only this status document.
+- With the local Phase 1 changes, the native arm64 macOS Debug build succeeded
+  in Xcode 27.2. The full suite passed 211 tests across 41 suites, with 278
+  executions, zero failures, and zero skips. All 209 baseline test identities
+  remained passing. The build emitted the existing App Intents metadata warning.
+- The model follows the TI CD4510BE top-view PDIP-16 pinout, CD4510B timing
+  diagram and truth table (Fig. 15, p. 3-253), and common-clock cascade
+  description. Reset and preset are asynchronous and active HIGH. Counting
+  uses a rising clock with active-LOW carry-in, and terminal carry is active
+  LOW. [TI CD4510B datasheet, SCHS071B, July 2003](https://www.ti.com/lit/ds/symlink/cd4510b.pdf)
+- In Explicit Power, invalid ideal +5 V or GND rails invalidate the count
+  and clock history through the shared power hook. The engine drives the
+  unpowered outputs X. On restoration, the first clock sample establishes
+  the level. Q remains X until reset or a valid BCD preset. A HIGH carry-in
+  still forces powered carry-out HIGH. Automatic Power assumes valid
+  rails and can restore a chip previously invalidated in Explicit Power.
+- Tests compare exact settled logic levels and counts with ideal rails and
+  discrete clock transitions. They exercise missing and incorrect VDD,
+  reset and preset recovery with clock already HIGH, and common-clock
+  cascading through 00–99 in both directions and both registration
+  orders in each power mode.
+- Power-loss invalidation is a digital simulator convention. The model
+  retains its initial zero for a fresh, powered instance and accepts BCD
+  presets 0–9. Supply ramps, retention voltage, non-BCD preset sequences,
+  propagation delays and physical ripple glitches are outside this check.
+  Unknown controls and uncertain clock transitions remain separate work.
+  The full six-digit reference clock was outside this verification.
 
 During the 23 November native UI check, the rebuilt app opened successfully. The View menu switched from Schematic to Physical DIP and the drawing palette changed from Green to Black. In the frozen oscilloscope, dragging both cursor handles updated both timestamps, Δt and the reciprocal. This pass did not visually compare the five component symbols and physical faces or exercise right-click recolouring, probe placement, native Save/Open, or dragging and rotating wired parts by mouse. Those paths were reviewed in code and their underlying behaviour was covered where available by the automated suite.
 
-**Suggested next task:** Continue sequential power-loss handling with CD4510, keeping its unknown-input and clock-transition work in a clearly scoped stage.
+### CD4060 Phase 2 verification on 27 November 2026
+
+- The CD4060 model follows the TI CD4060BE top-view PDIP-16 pinout and
+  description. Pin 11 accepts the external clock, active-HIGH RESET on
+  pin 12 asynchronously clears all 14 stages, and the counter advances on
+  falling clock edges. Pin 3 is Q14 (÷16,384).
+  [TI CD4060B datasheet, SCHS049C, October 2003](https://www.ti.com/lit/ds/symlink/cd4060b.pdf)
+- In Explicit Power, invalid +5 V (VDD, pin 16) or ground (VSS, pin 8)
+  clears the stored count and clock history through the shared power hook.
+  The engine drives the unpowered outputs X. After restoration the first
+  clock sample establishes the level and the divider outputs stay X until
+  a powered RESET HIGH. A fresh instance still starts with an unknown count.
+  Automatic Power assumes valid ideal rails.
+- Tests compare exact settled digital levels for missing VDD, logic LOW
+  without GND rail identity, restoration at either clock level, and
+  asynchronous reset recovery. They verify all ten exposed ratios through
+  14-bit rollover in both power modes. The wired Explicit Power reference
+  uses the Workbench clock scheduler with deterministic simulated time.
+  At 32,768 Hz, CD4060 pin 3 supplies 2 Hz to the toggling CD4027. CD4027
+  rising edges at 0.25 s and 2.25 s span two 1 Hz periods, with the
+  intervening rise at 1.25 s. Timing is checked at exact half-cycle
+  boundaries with ideal rails and unloaded outputs.
+- Power-loss invalidation is a digital simulation convention. The model
+  covers an ideal external clock, with oscillator analog behavior, supply
+  ramps, physical ripple delays, uncertain-clock changes, wall-clock
+  throughput, and the full reference clock outside this verification.
+- The native arm64 macOS Debug build and full suite passed in Xcode 27.2.
+  The Phase 1 baseline reproduced 211 tests across 41 suites (278
+  executions). Phase 2 passed 214 tests across 42 suites (285 executions),
+  with zero failures or skips and all 211 baseline identities preserved.
+  Xcode emitted the existing App Intents metadata warning.
+
+### CD4511/CD4543 Phase 3 verification on 27 November 2026
+
+- The TI CD4511BE top-view PDIP-16 pinout and truth table (p. 3-258)
+  specify LE (5) LOW for transparent operation and HIGH for hold. LT (3)
+  LOW drives all segments HIGH and takes priority over BI (4) LOW,
+  which drives them LOW. [TI CD4511B, SCHS072B, July 2003](https://www.ti.com/lit/ds/symlink/cd4511b.pdf)
+- The TI CD4543BE top-view PDIP-16 pinout and truth table (p. 3-333)
+  specify LD (1) HIGH for transparent operation and LOW for hold. BI (7)
+  HIGH blanks the display. PH (6) HIGH inverts all output levels,
+  including the blanked levels. Use PH LOW for common cathode and HIGH for
+  common anode. [TI CD4543B, SCHS086D, April 2004](https://www.ti.com/lit/ds/symlink/cd4543b.pdf)
+- Invalid VDD (16) or VSS (8) in Explicit Power clears the stored code
+  through the shared power hook and drives all seven outputs X. A fresh
+  latch starts unknown. Restoring power in hold leaves the stored code
+  unknown. Powered blanking and CD4511 lamp test still drive definite
+  levels. Releasing either override in hold exposes the unknown state.
+  Powered transparent operation samples the inputs, which hold retains.
+  Definite BCD codes 10–15 still decode to blank and can be retained.
+- The engine fixtures compare exact settled logic levels with ideal +5 V
+  and GND. They cover both power modes, missing VDD, VSS without ground
+  identity, recovery in hold and transparent modes, control priority,
+  both CD4543 phases, MAN74A and MAN72A segment inputs and illumination,
+  and propagation of X through a separately powered CD40106 inverter.
+- The WORK Mac native arm64 macOS Debug build and full Xcode 27.2 suite
+  passed on a copy of the local working tree. The pre-change run reproduced
+  all 214 Phase 2 identities across 42 suites (285 executions). Phase 3
+  passed 217 tests across 43 suites (294 executions), with zero failures
+  or skips and all 214 baseline identities passing. Xcode emitted the
+  existing App Intents metadata warning.
+- This digital model omits supply ramps, retention voltage, propagation
+  delays, setup and hold timing, display current and LCD backplane effects.
+  Uncertain-control semantics are Phase 4 work. This phase used automated
+  wired fixtures and left manual UI and full reference-clock checks for
+  later verification.
+
+### CD4510/CD4516 Phase 4B.1 verification on 27 November 2026
+
+- The TI CD4510BE and CD4516BE top-view PDIP-16 pinout, truth table and
+  figures 15–16 specify asynchronous active-HIGH RESET before active-HIGH
+  PE, then counting on a rising CLOCK with active-LOW CI. Direction HIGH
+  counts up. The model uses active-LOW CO at the direction's terminal count
+  with CI LOW and samples the settled carry from before the edge in a
+  common-clock cascade. [TI SCHS071B, July 2003](https://www.ti.com/lit/ds/symlink/cd4516b.pdf)
+- Each counter stores whole-count candidates (up to 10 for CD4510 and 16
+  for CD4516). Each resolved X or Z control or preset bit admits both
+  levels. Q bits report consensus independently. Carry uses the resulting
+  count and the CI and direction values from the same branch. Identical
+  control samples retain that carry through repeated settling without
+  counting again. Definite non-BCD CD4510 presets still hold the previous
+  count. For a partial preset, each invalid completion also contributes
+  the held count.
+- Fresh CD4510 starts at zero and fresh CD4516 starts unknown. Invalid
+  Explicit Power clears the stored certainty and clock history. Automatic
+  Power assumes ideal rails. Restoring power with CLOCK already HIGH
+  establishes the clock level. RESET and valid presets recover known counts.
+- Tests compare exact digital levels with ideal +5 V and GND or Automatic
+  Power, including both X and Z, the Phase 4A audit cases, ambiguous
+  controls and partial presets, recovery of known bits, weak pull
+  resolution, power loss and restoration, and repeated settling.
+  Common-clock tests cover both count directions and component registration
+  orders in both power modes. Two existing CD4510 fixtures now explicitly
+  establish inactive controls or reset after wiring.
+- The WORK Mac native arm64 macOS Debug build and full Xcode 27.2 suite
+  passed on a copy of the local working tree. Phase 4A reproduced 217 tests
+  in 43 suites (294 executions). Phase 4B.1 passed 222 tests in 44 suites
+  (312 executions), with zero failures or skips. All 217 baseline test
+  identities passed, including the existing clock regressions. Xcode
+  emitted the existing App Intents metadata warning.
+- The ideal digital model treats distinct receiver inputs independently,
+  even when they share an uncertain net. Across effective control changes
+  or another edge, the candidate set retains whole counts and drops the
+  prior association between counts and sampled control values. Downstream
+  components see only the settled pin consensus. These limits can produce
+  additional X readings in correlated circuits. Propagation delays and
+  analogue timing are outside the model. Uncertain clock transitions
+  retain the existing edge qualification and are deferred to Phase 5.
+
+### CD4029 Phase 4B.2 verification on 27 November 2026
+
+- The TI CD4029BE top-view PDIP-16 pin diagram and description (page 1)
+  specify asynchronous active-HIGH PRESET ENABLE, LOW CARRY IN to enable
+  counting, LOW-to-HIGH CLOCK, HIGH binary select, HIGH up select, and
+  active-LOW terminal carry. Figure 17 shows parallel clocking.
+  [TI CD4029B datasheet, SCHS034C, October 2003](https://www.ti.com/lit/ds/symlink/cd4029b.pdf)
+- The ideal digital model retains up to 16 whole-count candidates. X and Z
+  at each resolved control or JAM receiver admit LOW and HIGH. Q bits
+  drive their consensus. A possible preset loads every matching JAM value
+  asynchronously. A possible normal branch holds or counts based on CI
+  and the definite clock edge. Each branch calculates CO from its own
+  count, mode, direction and CI. CI HIGH forces CO HIGH. Common-clock
+  stages sample resolved pre-edge carry and consume the edge once.
+- JAM accepts 0 through 15 in either mode. A held or newly preset non-BCD
+  count keeps its Q bits, with uncertain CO in an enabled decade branch.
+  If any enabled decade transition starts above nine, that branch contributes
+  all 16 four-bit values and both carry levels. This covers mixed sets with
+  valid and invalid decade transitions conservatively. Other branches
+  still contribute their own outcomes.
+- Fresh instances and invalid Explicit Power have no known count.
+  Power loss clears clock history, so restoration with CLOCK already
+  HIGH does not count. A definite preset can establish a new count.
+  Automatic Power assumes ideal rails.
+- Regressions exercise exact digital levels with ideal +5 V/GND or Automatic
+  Power. Coverage includes X and Z controls and JAM, recovery, terminal
+  carry, weak pulls and contention, invalid decade transitions, supply
+  faults, and repeated settling. Common-clock cascades cover both modes,
+  directions, registration orders and power modes. The existing
+  preset-and-inhibit test adds an assertion for HIGH carry after the
+  uncertain-CI rollover. The new ambiguous-PE edge fixture settles CLOCK
+  LOW before changing PE and raising CLOCK together, isolating the concurrent
+  preset and count branches from an earlier asynchronous preset.
+- On the WORK Mac with Xcode 27.2, the native arm64 Debug build and full
+  suite passed on a copy of the local working tree. Phase 4B.1 reproduced
+  222 tests in 44 suites (312 executions). Phase 4B.2 passed 229 tests in
+  45 suites (334 executions), with zero failures or skips. All 222 baseline
+  test identities and their parameterised cases passed, including the
+  clock regressions. The existing App Intents metadata warning remains.
+  The clean baseline build also emitted Swift actor-isolation warnings
+  from the earlier CD4510/CD4516 test suite.
+- The model treats separate uncertain inputs independently and retains
+  control/count association for carry only until an effective input change
+  or another edge. Downstream stages receive settled pin consensus.
+  Uncertain clock transitions remain Phase 5 work. Propagation delays,
+  analogue timing and hardware behaviour outside the modeled counting
+  sequences are outside this digital abstraction.
+
+### CD4060 Phase 4B.3 verification on 27 November 2026
+
+- TI's CD4060BE PDIP-16 top-view pinout and functional description specify
+  14 counter stages, falling-edge counting on external clock pin 11,
+  an asynchronous active-HIGH reset on pin 12, and Q14 on pin 3.
+  Phase 4A identified that X or Z RESET discarded even a definite zero.
+  The model now retains zero plus either the held counts or their successors
+  on a definite falling edge. Definite HIGH clears to zero. Each divider
+  output drives the consensus of whole-count candidates, preserving sparse
+  correlations during later transitions. Resolved weak pulls can establish a
+  definite RESET and conflicting strong drivers yield X.
+  [TI CD4060B datasheet, SCHS049C, October 2003](https://www.ti.com/lit/ds/symlink/cd4060b.pdf)
+- A singleton is a scalar with a masked increment. Partially uncertain
+  states use sorted, merged inclusive ranges. Advancing shifts those ranges
+  modulo 16,384, and optionally inserts zero. Consensus comes from range
+  endpoints and the bit positions that vary within each range. Work scales
+  with the number of ranges. A fully unknown sentinel needs no heap storage
+  and stays invariant on hold, increment, or possible reset. Definite reset
+  recovers zero after startup or power loss. The power hook clears clock
+  history, so the first restored sample establishes a level. Repeated
+  evaluation at a stationary clock cannot apply another count.
+- On arm64 the candidate enum and the previous optional scalar both have a
+  16-byte stride. Each stored range takes 16 bytes of element payload. The
+  partial benchmark uses at most two live ranges (32 bytes of element
+  payload). An alternating candidate pattern can require up to 8,192 ranges
+  (128 KiB of element payload). An exact fixed bitset would cap the payload
+  at 2 KiB and handle fragmentation better, at the cost of processing up to
+  256 machine words per partial-state rotation and consensus. Ranges were
+  chosen for the common singleton, sparse, and contiguous cases. These
+  figures exclude array headers, spare capacity, temporary allocations and
+  process memory.
+- The native arm64 Debug build and complete Xcode 27.2 suite passed on the
+  WORK Mac. The baseline was 229 tests in 45 suites (334 executions).
+  Phase 4B.3 passed 232 tests in 45 suites (341 executions), with zero
+  failures or skips. Xcode result identifiers confirm all 229 baseline
+  tests and all 153 parameterised baseline cases remain. The existing
+  supply-fault, ratio/rollover, and wired clock fixtures are unchanged.
+  The CD4060 suite adds seven executions covering stationary X/Z RESET at
+  zero and eight, reset and count branches at a falling edge, sparse
+  consensus and recovery, candidate wrap/merge, X/Z clock samples under
+  the existing edge policy, and resolved pulls and contention in both
+  power modes. The wired Explicit Power regression still checks exact
+  transitions for 32,768 Hz → 2 Hz on pin 3 → 1 Hz on the CD4027.
+- The existing Swift actor-isolation warnings originate in the
+  CD4510/CD4516 uncertainty test parameters. Separately, Xcode reports
+  that App Intents metadata extraction was skipped because there is no
+  framework dependency.
+
+#### Phase 4B.3 wall-clock benchmark
+
+Both versions used the same native arm64 Debug configuration and fixture
+on the WORK Mac with Xcode 27.2 and parallel testing disabled. Each
+workload used one warm-up and five measured runs. The table shows
+monotonic wall time in milliseconds as median [minimum–maximum].
+Timing excludes fixture creation and initial reset.
+
+| Workload | Before (ms) | After (ms) | Median change |
+| --- | ---: | ---: | ---: |
+| Isolated, definite | 376.72 [373.54–378.32] | 393.57 [391.84–396.56] | +4.5% |
+| Isolated, partially uncertain input schedule | 357.31 [356.86–358.00] | 567.63 [560.15–568.83] | +58.9% |
+| Isolated, fully unknown | 353.60 [349.73–359.31] | 371.45 [370.64–372.25] | +5.0% |
+| Wired CD4060 → CD4027 | 1,481.52 [1,465.44–1,509.68] | 1,467.86 [1,461.37–1,477.76] | −0.9% |
+
+Each isolated run feeds 262,144 HIGH/LOW cycles directly into the model
+(524,288 evaluates). The definite case starts at zero. The fully unknown
+case starts fresh with RESET LOW. The partial case repeats 256-cycle blocks
+with RESET HIGH on cycle 0, X on cycles 8–23 inclusive, and LOW otherwise
+(zero-based). Both versions see the same inputs. The old version discarded
+all state at the first X, which explains why the partial workload compares
+different amounts of useful work. The definitive isolated path showed a
+repeatable slowdown in this sample. The wired timing ranges overlap.
+Caching divider output-pin lookups was also tried and dropped after it
+increased the isolated definite median to 404.71 ms.
+
+The wired workload uses the deterministic Explicit Power fixture and
+services exactly one simulated second (65,536 half-period events) with
+the virtual time source held fixed. Median host throughput was about
+44,236 events/s before and 44,647 events/s after, or 0.675 and 0.681
+simulated seconds per wall second. This measures a Debug build of the
+whole clock circuit on this host. The simulated input and output remain
+32,768 Hz, 2 Hz and 1 Hz regardless of host throughput. The benchmark
+neither measures a Release build nor compares against a physical chip's
+maximum switch rate. Oscillator analogue behavior, supply ramps and
+ripple delays are outside this phase. Uncertain clock transitions remain
+Phase 5 work.
+
+### CD4017/CD4026 Phase 4C.1 verification on 28 November 2026
+
+- The digital models follow the TI CD4017BE and CD4026BE top-view PDIP-16
+  terminal diagrams. CD4017B clocking and carry follow SCHS027C (February
+  2004), pp. 1–2, including the pin 13 clocking footnote and Fig. 2.
+  CD4026B clocking, display gating, display-enable output, carry and ungated
+  c follow SCHS031B (July 2003), pp. 1 and 3, Figs. 1 and 3.
+  [TI CD4017B datasheet](https://www.ti.com/lit/ds/symlink/cd4017b.pdf) ·
+  [TI CD4026B datasheet](https://www.ti.com/lit/ds/symlink/cd4026b.pdf)
+- The Phase 4A audit found that X or Z reset discarded the entire count.
+  Both chips now retain a bounded set of whole counts (0–9). An asserted
+  reset selects zero and an X or Z reset adds zero to the ordinary outcome.
+  Each decoded output and carry is driven by consensus. Carry is HIGH at
+  counts 0–4. At stationary count 1 with X or Z reset, CD4017 Q0/Q1 are X
+  and Q2–Q9 are LOW. With display enabled, CD4026 b/c are HIGH, g is LOW,
+  and a/d/e/f are X. Both carries and ungated c are HIGH. DE LOW blanks
+  all gated segments, including ones whose decoded values are X. DE OUT
+  drives the resolved binary enable level or X when the input is X or Z.
+- A LOW-to-HIGH CLOCK with stable LOW inhibit advances once. With stable
+  X or Z inhibit it produces count-or-hold. A HIGH-to-LOW inhibit with
+  CLOCK held HIGH also advances once. Each evaluation records the resolved
+  pin samples, so repeated passes at the same levels consume no extra
+  edges. Transitions through X/Z on clock-capable pins and samples where
+  both clock-capable inputs change together have no qualified edge in this
+  phase. Their timing and ordering are deferred to Phase 5. Candidate
+  counts preserve correlations across outputs within a chip. Resolved X/Z
+  carries no cross-pin or cross-chip correlation metadata.
+- Explicit Power uses the existing ideal +5 V/GND supply validation.
+  Automatic Power assumes valid supply. Fresh state and restoration after
+  invalid supply start with all ten counts possible. The model uses settled
+  logic levels and has no propagation, supply ramp, analogue input or
+  timing tolerance parameters. Fixtures compare settled logic states
+  exactly and exercise both power modes, weak pulls, strong contention,
+  wired MAN74A outputs, and a carry-to-clock cascade in both registration
+  orders.
+- Native arm64 Debug build and the full Xcode 27.2 suite passed on the
+  WORK Mac using a copy of the local working tree. Baseline: 232 tests,
+  45 suites, 341 executions. Phase 4C.1: 236 tests, 46 suites, 351
+  executions. Both runs had zero failures and zero skips. All 232 baseline
+  test identities and 159 parameterized cases were retained. Baseline
+  fixtures are unchanged. In the new resolved-reset fixture, the strong
+  LOW driver is released before the weak HIGH pull recovers zero. An
+  earlier run exposed the incorrect fixture expectation with both drivers
+  active.
+- Existing build warnings are the Swift actor-isolation diagnostics in
+  the CD4510/CD4516 uncertainty test parameters on full compilation, and
+  skipped App Intents metadata extraction without a framework dependency.
+
+### CD4518/CD4520 Phase 4C.2 verification on 28 November 2026
+
+- The TI CD4518BE and CD4520BE top-view PDIP-16 terminal diagram and
+  truth table (SCHS076D, March 2004, p. 1) give CLOCK/ENABLE/RESET on
+  pins 1/2/7 and 9/10/15, Q1–Q4 on 3–6 and 11–14 (LSB first),
+  and shared VSS/VDD on 8/16. A rising CLOCK with ENABLE held HIGH
+  or falling ENABLE with CLOCK held LOW increments the addressed half.
+  TI specifies ripple cascading from Q4 to the next half's ENABLE
+  with its CLOCK tied LOW.
+  [TI CD4518B/CD4520B datasheet](https://www.ti.com/lit/ds/symlink/cd4518b.pdf#page=1)
+- Each half stores its own whole-count candidates (0–9 or 0–15) and
+  resolved CLOCK/ENABLE history. RESET HIGH asynchronously selects zero.
+  Resolved RESET X or Z adds zero to the ordinary outcome. Each Q bit
+  drives the consensus across candidates. The Phase 4A cases now give
+  CD4518 {0,8} / X000 and CD4520 {0,15} / XXXX at a stationary clock.
+  Releasing CD4520 RESET to LOW and counting once gives {0,1} / 000X.
+- A clean rising CLOCK or falling ENABLE with its other input stable at
+  X or Z retains both count and hold. Recording both input samples,
+  including during reset, prevents repeated settling from consuming
+  the same event. Phase 5 will address edges through X/Z and ordering
+  when both clock-capable pins change in the same resolved sample.
+  Receiver uncertainty carries no cross-pin or cross-package correlation.
+- Shared Explicit Power validation uses ideal +5 V and GND. Invalid
+  supplies invalidate both halves and drive X. Fresh and restored halves
+  start with every count possible until controls constrain them.
+  Automatic Power assumes ideal supply. The ideal digital model omits
+  propagation and setup/hold timing, analogue thresholds, supply ramps
+  and output loading.
+- Wired engine fixtures compare exact settled logic levels with ideal
+  rails or Automatic Power. They cover both halves, both rollovers,
+  dominant reset, both definite edge mechanisms, stable X/Z gating,
+  weak pulls, contention, repeated settling, invalid rails, restoration
+  at either clock level, and Q4-to-ENABLE cascading in both registration
+  orders. Existing fixtures were unchanged. The first run of the new
+  reset fixture incorrectly expected the zero candidate to stay at zero
+  after RESET release and a valid edge. The corrected fixture advances
+  both candidates.
+- The WORK Mac native arm64 Debug build and full Xcode 27.2 suite passed.
+  Baseline on a copy of the original working tree: 236 tests, 46 suites,
+  351 executions. Phase 4C.2 in the canonical checkout: 240 tests,
+  47 suites, 367 executions. Both runs had zero failures and zero skips.
+  The Xcode result bundles confirm all 236 baseline test identities and
+  169 parameterized baseline executions still pass. Existing Swift
+  actor-isolation and App Intents build warnings remain.
+
+### CD4027 Phase 4D verification on 28 November 2026
+
+- The model follows the Texas Instruments CD4027BE top-view PDIP-16
+  terminal diagram and function table in SCHS032D (July 2021), §§5 and
+  8.2. Unit A uses Q/Q̅/CLK/RESET/K/J/SET on 1–7. Unit B uses the
+  same order on 15–9. Both share VSS on 8 and VDD on 16.
+  [TI CD4027B datasheet](https://www.ti.com/lit/ds/symlink/cd4027b.pdf#page=9)
+- Each unit stores a set of at most three correlated (Q, Q̅) pairs
+  and its own clock history. The valid pairs are (LOW, HIGH),
+  (HIGH, LOW), and (HIGH, HIGH). Asserted asynchronous controls take
+  priority. The resolved X and Z input levels each admit both binary
+  possibilities. Each output drives the consensus across candidates.
+  SET HIGH with RESET X/Z produces (HIGH, X). RESET HIGH with SET X/Z
+  produces (X, HIGH).
+- Releasing one of two asserted controls leaves the other in command.
+  A possible simultaneous release of both asserted controls admits
+  either normal state, including when a rising clock is observed in
+  that sample. With both asynchronous controls inactive, JK samples
+  only on an adjacent resolved LOW-to-HIGH clock transition. From
+  LOW, J determines the next Q. From HIGH, inverted K determines it.
+  An unknown prior state stays unknown in toggle mode and a later
+  definite set or reset can recover certainty.
+- Fresh and restored units start with both complementary pairs
+  possible and no clock history. Explicit Power requires the shared
+  ideal +5 V and GND rails. Missing or incorrect rails clear both
+  units and the engine drives X. Automatic Power assumes ideal rails.
+  The model uses settled digital logic only. It omits analogue input
+  thresholds, propagation delay, output loading, supply ramps, pulse
+  width and setup/hold effects. Uncertain clock transitions and
+  ordering of simultaneous input changes are deferred to Phase 5.
+  Receiver uncertainty has no cross-pin correlation.
+- Wired tests compare exact settled levels under ideal Explicit and
+  Automatic Power. They exercise both physical units, the full JK
+  truth table, unknown and floating controls, recovery, weak pulls,
+  contention, downstream inversion, repeated settling, and restoration
+  with clocks at different levels. The minutes/hours selector fixture
+  uses clean pulses and complementary select outputs. The existing
+  deterministic CD4060 fixture still verifies 32,768 Hz → 2 Hz → 1 Hz
+  at exact simulated half-cycle boundaries. No existing fixture needed
+  adjustment.
+- The WORK Mac native arm64 Debug build and full Xcode 27.2 suite
+  passed in the canonical checkout. Baseline: 240 tests, 47 suites,
+  367 executions. Phase 4D: 246 tests, 48 suites, 378 executions.
+  Both runs had zero failures and zero skips. The Xcode results
+  preserve all 240 baseline test identities and 185 parameterized
+  executions. Existing build warnings were left in place.
+
+### CD4511/CD4543 Phase 4E verification on 28 November 2026
+
+- The models follow Texas Instruments CD4511BE and CD4543BE top-view
+  PDIP-16 terminal assignments, logic diagrams and output truth tables.
+  Both use VSS 8 and VDD 16. CD4511 A–D are 7/1/2/6, LT/BI/LE are
+  3/4/5, and a–g are 13/12/11/10/9/15/14. CD4543 A–D are 5/3/2/4,
+  LD/PH/BI are 1/6/7, and a–g are 9/10/11/12/13/15/14.
+  The tables differ on 6 and 9. The CD4511 omits segment a for 6 and d
+  for 9. The CD4543 includes those segments. The previous definite
+  glyphs match the TI rows. Codes 10–15 blank on both parts.
+  [TI CD4511B SCHS072B, Fig. 8 and truth table](https://www.ti.com/lit/ds/symlink/cd4511b.pdf#page=4)
+  · [TI CD4543B SCHS086D, Fig. 1](https://www.ti.com/lit/ds/symlink/cd4543b.pdf#page=2)
+  · [CD4543B truth table](https://www.ti.com/lit/ds/symlink/cd4543b.pdf#page=5)
+- Each latch stores up to 16 whole BCD words. Resolved X or undriven Z
+  at a receiver admits both binary levels. CD4511 LE LOW and CD4543
+  LD HIGH replace the candidates with the current input words. Hold
+  retains the set. An ambiguous latch admits both hold and transparent
+  outcomes. Re-evaluating unchanged inputs gives the same set. Fresh
+  state and power loss admit all 16 words, so restoring in hold
+  with overrides inactive drives X until transparent sampling recovers
+  data. Explicit Power requires the existing +5 V and GND rail identities.
+  The engine drives X for missing or incorrect rails. Automatic Power
+  assumes valid rails.
+- Output logic follows the Phase 4A audit and TI control priority. On
+  CD4511, LT LOW forces all HIGH ahead of BI LOW blanking. CD4543 BI
+  HIGH blanks, with PH HIGH inverting even the blanked levels. The
+  model applies the full override rule in each possible output branch
+  and drives per-segment consensus. Output overrides leave state
+  selection to the latch control, including transparent sampling
+  during lamp test or blanking.
+- The digital model uses settled pin levels and ideal outputs.
+  Candidate words preserve correlations within stored BCD values.
+  Different uncertain receiver pins are expanded independently, even
+  when they share a net or upstream source. This can introduce extra
+  candidates and X outputs. Physical setup/hold, propagation delay,
+  supply ramps, output loading, and analogue LCD behavior are outside
+  the model. Uncertain clock transitions remain deferred to Phase 5.
+- Wired fixtures use ideal +5 V/GND in Explicit Power and ideal
+  assumed rails in Automatic Power. The truth-table sweep compares
+  exact logic levels for all 16 words on both drivers, with both PH
+  levels on CD4543. The five added tests also cover partial BCD,
+  latch and override X/Z, repeated settling, recovery, weak pulls,
+  contention, MAN74A/MAN72A illumination and downstream inversion.
+  The existing SevenSegmentPowerTests checker now accepts mixed
+  HIGH/LOW/X levels. Existing fixture inputs and expected behavior were
+  preserved. The Phase 3 rail-loss, hold and transparent restoration
+  tests, wired Workbench archive tests, and clock regressions passed.
+- The WORK Mac native arm64 Debug build and full Xcode 27.2 suite
+  passed in the canonical checkout. The baseline reproduced 246 tests,
+  48 suites and 378 executions. Phase 4E passed 251 tests, 48 suites
+  and 394 executions. Both runs had zero failures and zero skips.
+  Xcode result identifiers confirm that all 246 baseline tests and
+  195 baseline parameterized executions still pass. The existing
+  App Intents metadata warning remains.
 
 Read this status file and inspect the current working tree when resuming development. Update the document after significant features, architectural decisions, or confirmed issues.
 
@@ -520,12 +1003,13 @@ intervening region is X. The TI limits apply over the SN74LS recommended
 4.75–5.25 V supply and 0–70 °C range. The workbench supplies ideal 5 V and
 ground in Explicit Power mode and assumes valid supply in Automatic Power
 mode. Temperature and supply variation are outside the model. Count state
-starts unknown and requires reset or preset after power loss or archive
-reopen. Floating or X clocks break edge qualification and leave the stored
-count unchanged. Floating controls are unknown unless the other input of
-their pair establishes LOW. TTL floating-input bias, output voltage drop,
-input and output current, fan-out, propagation delay, ripple glitches,
-minimum pulse widths and setup time are omitted.
+starts with every legal package state after power loss or archive reopen.
+A definite reset or preset establishes a known count. Floating or X
+clocks break edge qualification. Resolved X and Z on control inputs
+admit both binary levels. A known LOW masks the other input of its pair.
+TTL floating-input bias, output voltage drop, input and output current,
+fan-out, propagation delay, ripple glitches, minimum pulse widths and
+setup time are omitted.
 
 Validation fixtures use ideal logic sources with settled observations
 after each half-cycle. At ideal 5 V, the expected control and sequence bits
@@ -534,3 +1018,160 @@ regions at 0.79, 0.81, 1.99 and 2.01 V (fixture voltage tolerance 1 µV).
 The physical DIP and built-in schematic share pin numbers with the
 `74xx:74LS90`, `74xx:74LS92` and `74xx:74LS93` KiCad netlist mappings
 and existing Workbench archive format.
+
+### Phase 4F verification on 28 November 2026
+
+- Each candidate stores the A state and the B sequence index together.
+  The bounds are 10, 12 and 16 legal states for the LS90, LS92 and LS93.
+  Reset, preset and normal counting contribute whole-package outcomes.
+  A definite R9 pair on the LS90 overrides R0. Both clock inputs are
+  sampled during asynchronous control, and only the branch with both
+  controls inactive advances on a definite falling edge. The output
+  pins drive their individual consensus across the candidate states.
+- The Phase 4A audit cases now produce QD–QA `X00X` for the LS90 with
+  R0 HIGH/HIGH and R9 HIGH/X or HIGH/Z, `00X0` for the LS92 from
+  `0010`, and `000X` for the LS93 from `0001`, both with R0
+  HIGH/X or HIGH/Z. Further settled steps exercise definite recovery,
+  separate falling edges and repeated settling. The new input fixtures
+  also exercise weak HIGH, strong LOW and strong contention.
+- Phase 4F added four test identities with 20 parameterized executions
+  to the existing SN74LSCounterTests suite. The new fixtures use ideal
+  clock and control sources, compare exact settled pin levels, and run
+  the ambiguity and rail cases in both power modes. The two-package
+  cascade fixture checks both registration orders in Explicit Power
+  mode. Existing fixtures, inputs and expectations were retained,
+  including the bi-quinary hookup, DC thresholds, KiCad pin mapping,
+  rotation and archive round-trip. No baseline fixture adjustments were
+  needed.
+- The WORK Mac native arm64 Debug build passed in the canonical checkout
+  using Xcode 27.2. Before edits, the full suite passed 251 tests across
+  48 suites and 394 executions. The final run passed 255 tests across
+  48 suites and 414 executions. Both had zero failures and skips. Xcode
+  result identifiers verified all 251 baseline tests and 211
+  parameterized executions. The existing App Intents metadata warning
+  remains.
+- The model follows settled receiver values. When one unresolved source
+  affects several control receivers, the model may admit extra outcomes
+  across the separate pairs. Output consensus can also hide clock edges
+  that are only possible in some candidates. Uncertain clock transitions
+  and simultaneous edge ordering remain Phase 5 work. Physical ripple
+  delays and TTL floating-input bias are outside this model.
+
+## Phase 4G integration verification on 28 November 2026
+
+### Verification
+
+- WORK Mac, native arm64, Xcode 27.2 (27B52). The pre-edit Debug
+  baseline reproduced 255 passing tests in 48 suites and 414 executions
+  with zero failures and skips. Xcode reported 231 parameterized cases
+  belonging to 72 test identities.
+- The final full Debug suite passed 262 tests across 50 suites and 435
+  executions with zero failures and skips. Xcode result identifiers
+  confirmed that all 255 baseline test identities and all 231 baseline
+  parameterized cases still pass. Phase 4G adds seven tests and 21
+  executions. The native arm64 Debug app build and Release app build
+  both succeeded.
+- The first focused run expected an unknown CD4510 count on reopening.
+  The existing model initializes a fresh CD4510 to zero. The fixture
+  now verifies the established zero startup against a live count of 12
+  before saving. The clock is HIGH and running before saving and starts
+  LOW and paused after opening. Both modes pass with this
+  fixture correction.
+
+### Wired coverage
+
+- A scheduled ideal 32,768 Hz Workbench clock drives CD4060 pin 11.
+  CD4060 Q14 drives a toggle-connected CD4027, whose Q clocks both
+  CD4510s. The ones carry drives the tens carry-in. CD4511/MAN74A shows
+  ones and CD4543/MAN72A shows tens. The fixture checks the sample
+  immediately before and exactly at each divider edge from 0.25 to
+  1.25 simulated seconds, with JK rising edges at 0.25 and 1.25 s.
+- A separate common-clock fixture with direct, immediate clock steps
+  checks every displayed digit on both clock phases through 00–99–00
+  up and 00–99–00–99 down, in Explicit and Automatic Power and both
+  upstream-first and downstream-first registration. The CD4543 path
+  exercises its distinct 6 and 9 glyphs. Explicit Power removes and
+  restores the ones counter supply while the decoder remains powered.
+  The state stays indeterminate until reset, after which both digits
+  read 00 and one pulse displays 01.
+- SN74LS90/92/93 exercises separate falling-edge A and B clocks and
+  QA-to-CKB cascades (divide by 10, 12 and 16). The separate LS90
+  bi-quinary hookup checks divide by ten and equal HIGH/LOW intervals
+  on QA. The CD40106 → LS90 → CD4511 → MAN74A fixture verifies ideal
+  digital CMOS/TTL interoperability in both directions. This is a
+  digital model result. Physical voltage, fan-out, current and
+  electrical compatibility are outside its coverage.
+- With the ripple link isolated and both LS90 clock pins held at
+  settled definite levels, the reset/preset case propagates X00X in
+  QD–QA order to CD4511. Segments b and c stay definitely lit, and
+  the remaining segments are X across repeated settles. Both power
+  modes and registration orders are covered.
+- The archive check round-trips the Workbench JSON for the accelerated
+  chain in both power modes. It compares the saved configuration bytes
+  after reopen and checks clock frequency, clock phase, running status,
+  count initialization and the first count after reset.
+
+### Throughput
+
+The timed workload is one simulated second (65,536 source half-period
+events) through the full two-display circuit in Explicit Power. Both
+builds use the same fixture and virtual clock with no scope probes and
+parallel testing disabled. Debug uses the project's default test settings.
+The Release benchmark keeps the Release optimization settings and adds
+`ENABLE_TESTABILITY=YES ONLY_ACTIVE_ARCH=YES` for that invocation. The
+first Release test invocation stopped at compilation because the default
+Release module does not support `@testable import`. A separate standard
+Release app build uses the project defaults. Each configuration runs a
+warm-up and five
+measured trials, each with a newly wired and reset circuit. Wall time
+uses a monotonic clock and excludes setup, reset and test launch. The
+real-time ratio is simulated seconds per wall second.
+
+| Build | Median wall time [min–max] | Median source events/s | Real-time ratio |
+| --- | ---: | ---: | ---: |
+| Debug | 5.4728 s [5.3979–5.4855] | 11,975 | 0.183× |
+| Release | 0.6863 s [0.6805–0.6877] | 95,499 | 1.457× |
+
+- Debug runs in seconds were 5.4855, 5.4728, 5.3979, 5.4417, 5.4827.
+- Release runs in seconds were 0.6863, 0.6877, 0.6816, 0.6869, 0.6805.
+
+The earlier Phase 4B.3 wired benchmark had the same source rate and
+event count but a smaller circuit ending at CD4027. No performance
+comparison is made across those workloads.
+
+To repeat the measurement, temporarily add the following wrapper to the
+test target and select only `CMOS4000SimulatorTests/Phase4GBenchmarkRunner`
+in native arm64 Xcode tests. Set the configuration to Debug, then Release,
+and disable parallel testing for both. Pass the Release overrides above
+to its `xcodebuild test` invocation. Remove the wrapper before running
+the full correctness suite.
+
+```swift
+import Testing
+
+@MainActor
+struct Phase4GBenchmarkRunner {
+    @Test func measure() throws {
+        let seconds = try Phase4GThroughput.measure()
+        print("PHASE4G_BENCHMARK_SECONDS \(seconds)")
+    }
+}
+```
+
+### Working tree and checkpoint
+
+- Phase 4G adds `CMOS4000SimulatorTests/Phase4GIntegrationTests.swift` and
+  appends this entry to `PROJECT_STATUS.md`. The working tree still
+  contains the 12 previously modified tracked files and eight previously
+  untracked files, plus the new test file. No existing test source was
+  edited during Phase 4G.
+- `main` and `origin/main` were 0 ahead and 0 behind at
+  `af137a722c949e4d180c15ccb910ff69deb88842`, also confirmed against
+  GitHub's `refs/heads/main` with a read-only query. Local edits and
+  untracked files are pending. Neither a commit nor a push was made.
+- No integration defect or verification blocker was observed. Existing
+  Xcode warnings remain, including App Intents metadata extraction
+  and Swift Testing actor-isolation warnings in prior fixtures.
+  Recommended checkpoint is the verified Phase 4G working tree.
+  Review and preserve that checkpoint before moving to Phase 5
+  uncertain clock transitions or switching Macs.

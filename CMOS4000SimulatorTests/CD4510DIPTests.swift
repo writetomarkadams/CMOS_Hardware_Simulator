@@ -43,20 +43,24 @@ struct CD4510DIPTests {
         let chip = CD4510()
         let clock = WorkbenchClock()
         let high = WorkbenchSwitch()
+        let reset = WorkbenchSwitch()
         bench.add("CD4510", component: chip)
         bench.add("Clock", component: clock)
         bench.add("Low", component: WorkbenchSwitch())
         bench.add("High", component: high)
         bench.add("LED", component: WorkbenchLED())
+        bench.add("Reset", component: reset)
         bench.toggle(high)
+        bench.toggle(reset)
 
         let output = WorkbenchTerminal(partID: 1, pinNumber: 6)
         let led = WorkbenchTerminal(partID: 5, pinNumber: 1)
         bench.componentAppearance = .physicalDIP
-        for (source, pin) in [(2, 15), (3, 1), (3, 5), (3, 9), (4, 10)] {
+        for (source, pin) in [(2, 15), (3, 1), (3, 5), (6, 9), (4, 10)] {
             bench.select(WorkbenchTerminal(partID: source, pinNumber: 1))
             bench.select(WorkbenchTerminal(partID: 1, pinNumber: pin))
         }
+        bench.toggle(reset)
         bench.select(output)
         bench.select(led)
         let probe = ScopeProbe.pin(output)

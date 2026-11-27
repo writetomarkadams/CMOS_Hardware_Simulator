@@ -68,7 +68,9 @@ final class TwoDigitCounter {
 
     private func settleAndUpdateReadouts() {
         engine.settle()
-        count = tens.count * 10 + ones.count
+        if let tensCount = tens.count, let onesCount = ones.count {
+            count = tensCount * 10 + onesCount
+        }
         carryOut = carry.state
     }
 }

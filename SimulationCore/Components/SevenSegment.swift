@@ -10,10 +10,22 @@ enum SevenSegmentDriverKind: String, CaseIterable, Codable {
 final class SevenSegmentDriver: LogicComponent {
     let kind: SevenSegmentDriverKind
     let pins: [Int: Pin]
-    private var latchedCode: Int?
+    // A fresh or unpowered latch can contain any four-bit word.
+    private static let allCodes = Set(0...15)
+    private var latchedCodes = allCodes
 
-    private static let digits = ["abcdef", "bc", "abdeg", "abcdg", "bcfg",
-                                 "acdfg", "acdefg", "abc", "abcdefg", "abcdfg"]
+    private static let allSegments: UInt8 = 0b1111111
+
+    // TI SCHS072B and SCHS086D, bit order g...a. The CD4511B omits
+    // segment a for 6 and segment d for 9.
+    private static let cd4511Digits: [UInt8] = [
+        0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
+        0b1101101, 0b1111100, 0b0000111, 0b1111111, 0b1100111
+    ]
+    private static let cd4543Digits: [UInt8] = [
+        0b0111111, 0b0000110, 0b1011011, 0b1001111, 0b1100110,
+        0b1101101, 0b1111101, 0b0000111, 0b1111111, 0b1101111
+    ]
 
     init(_ kind: SevenSegmentDriverKind) {
         self.kind = kind
@@ -35,64 +47,66 @@ final class SevenSegmentDriver: LogicComponent {
         self.pins = pins
     }
 
+    func powerDidFail() {
+        latchedCodes = Self.allCodes
+    }
+
     func evaluate() {
         let is4511 = kind == .cd4511
         let latch = pins[is4511 ? 5 : 1]!.state
-        if latch == (is4511 ? .low : .high) {
-            latchedCode = inputCode()
-        } else if latch != (is4511 ? .high : .low) {
-            latchedCode = nil
+        let transparentLevel: LogicState = is4511 ? .low : .high
+        if latch == transparentLevel {
+            latchedCodes = inputCodes()
+        } else if latch != transparentLevel.inverted {
+            latchedCodes.formUnion(inputCodes())
         }
 
-        let segments: String?
-        let phase: LogicState
-        if is4511 {
-            phase = .low
-            let test = pins[3]!.state
-            let blank = pins[4]!.state
-            switch (test, blank) {
-            case (.low, _): segments = "abcdefg"
-            case (.high, .low): segments = ""
-            case (.high, .high): segments = decodedSegments()
-            default: segments = nil
-            }
-        } else {
-            phase = pins[6]!.state
-            switch pins[7]!.state {
-            case .high: segments = ""
-            case .low: segments = decodedSegments()
-            case .undefined, .highImpedance: segments = nil
+        // The latch is upstream of every override. Each control branch sees
+        // the codes admitted by the latch and applies the whole output rule.
+        let blank = pins[is4511 ? 4 : 7]!.state
+        let blankLevels = PresettableCounterState.possibilities(is4511 ? blank.inverted : blank)
+        let lampLevels = is4511 ? PresettableCounterState.possibilities(pins[3]!.state.inverted) : [false]
+        let phaseLevels = is4511 ? [false] : PresettableCounterState.possibilities(pins[6]!.state)
+        let digits = is4511 ? Self.cd4511Digits : Self.cd4543Digits
+
+        var alwaysHigh = Self.allSegments
+        var sometimesHigh: UInt8 = 0
+        for lamp in lampLevels {
+            for blanked in blankLevels {
+                for phase in phaseLevels {
+                    for code in latchedCodes {
+                        let decoded = code < digits.count ? digits[code] : 0
+                        let pattern = lamp ? Self.allSegments : (blanked ? 0 : decoded)
+                        let output = phase ? pattern ^ Self.allSegments : pattern
+                        alwaysHigh &= output
+                        sometimesHigh |= output
+                    }
+                }
             }
         }
-        for (number, name) in zip(kind.outputs, "abcdefg") {
-            let output: LogicState
-            if let segments, phase == .low || phase == .high {
-                output = segments.contains(name) != (phase == .high) ? .high : .low
-            } else {
-                output = .undefined
-            }
-            pins[number]!.drive(output)
+        for (bit, number) in kind.outputs.enumerated() {
+            let mask: UInt8 = 1 << bit
+            pins[number]!.drive(PresettableCounterState.consensus(
+                low: alwaysHigh & mask == 0, high: sometimesHigh & mask != 0
+            ))
         }
     }
 
-    private func inputCode() -> Int? {
-        var code = 0
+    private func inputCodes() -> Set<Int> {
+        var knownMask = 0
+        var highBits = 0
         for (bit, number) in kind.inputs.enumerated() {
             switch pins[number]!.state {
-            case .high: code |= 1 << bit
-            case .low: break
-            case .undefined, .highImpedance: return nil
+            case .high:
+                highBits |= 1 << bit
+                knownMask |= 1 << bit
+            case .low:
+                knownMask |= 1 << bit
+            case .undefined, .highImpedance:
+                break
             }
         }
-        return code
-    }
-
-    private func decodedSegments() -> String? {
-        guard let code = latchedCode else { return nil }
-        guard code < Self.digits.count else { return "" }
-        if kind == .cd4511 && code == 6 { return "cdefg" }
-        if kind == .cd4511 && code == 9 { return "abcfg" }
-        return Self.digits[code]
+        return Self.allCodes.filter { $0 & knownMask == highBits }
     }
 }
 

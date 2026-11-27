@@ -272,3 +272,219 @@ struct SN74LSCounterTests {
         expectOutput(reopened, kind, 0)
     }
 }
+
+extension SN74LSCounterTests {
+    private struct Circuit {
+        let engine = SimulationEngine()
+        let chip: SN74LSCounter
+        let supply = WorkbenchPower(.fiveVolts).pins[1]!
+        let ground = WorkbenchPower(.ground).pins[1]!
+        let clockA = driver("CKA")
+        let clockB = driver("CKB")
+        let resetA = driver("R0(1)")
+        let resetB = driver("R0(2)")
+        let presetA = driver("R9(1)")
+        let presetB = driver("R9(2)")
+        let weakResetB = driver("Weak reset", weak: true)
+        let competingResetB = driver("Competing reset")
+        let wrongSupply = WorkbenchPower(.ground).pins[1]!
+
+        init(_ kind: CounterChip, automatic: Bool, downstream: SN74LSCounter? = nil,
+             downstreamFirst: Bool = false) {
+            chip = SN74LSCounter(kind)
+            engine.automaticallyPowerChips = automatic
+            if downstreamFirst, let downstream { engine.addComponent(downstream) }
+            engine.addComponent(chip)
+            if !downstreamFirst, let downstream { engine.addComponent(downstream) }
+
+            let packages = [chip] + [downstream].compactMap { $0 }
+            wire([supply, wrongSupply] + packages.map { $0.pins[5]! })
+            wire([ground] + packages.map { $0.pins[10]! })
+            let reset = kind == .ls92 ? (6, 7) : (2, 3)
+            wire([resetA] + packages.map { $0.pins[reset.0]! })
+            wire([resetB, weakResetB, competingResetB] + packages.map { $0.pins[reset.1]! })
+            wire([clockA, chip.pins[14]!])
+            if let downstream {
+                for package in packages { wire([package.pins[12]!, package.pins[1]!]) }
+                let qd = kind == .ls92 ? 8 : 11
+                wire([chip.pins[qd]!, downstream.pins[14]!])
+            } else {
+                wire([clockB, chip.pins[1]!])
+            }
+            if kind == .ls90 {
+                wire([presetA] + packages.map { $0.pins[6]! })
+                wire([presetB] + packages.map { $0.pins[7]! })
+            }
+
+            wrongSupply.drive(.highImpedance)
+            if automatic { supply.drive(.highImpedance) }
+            for driver in [clockA, clockB, resetA, resetB, presetA, presetB] {
+                driver.drive(.low)
+            }
+        }
+
+        private static func driver(_ name: String, weak: Bool = false) -> Pin {
+            Pin(number: 1, name: name, direction: .output, isWeakDriver: weak)
+        }
+
+        private func wire(_ pins: [Pin]) {
+            let net = Net(name: pins[0].name)
+            pins.forEach { net.connect($0) }
+            engine.addNet(net)
+        }
+
+        func settle() throws { try #require(engine.settle()) }
+
+        func drive(_ pin: Pin, _ state: LogicState) throws {
+            pin.drive(state)
+            try settle()
+        }
+
+        func pulse(_ pin: Pin) throws {
+            try drive(pin, .high)
+            try drive(pin, .low)
+        }
+
+        func expectWord(_ word: String, on package: SN74LSCounter? = nil) {
+            let package = package ?? chip
+            let pins = package.kind == .ls92 ? [8, 9, 11, 12] : [11, 8, 9, 12]
+            let levels: [Character: LogicState] = ["0": .low, "1": .high, "X": .undefined]
+            let actual = pins.map { package.pins[$0]!.driveState }
+            #expect(actual == word.map { levels[$0]! }, "Expected QD–QA = \(word)")
+        }
+    }
+
+    @Test(arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func ls90AmbiguousPresetWithReset(automatic: Bool, uncertain: LogicState) throws {
+        let c = Circuit(.ls90, automatic: automatic)
+        c.resetA.drive(.high)
+        c.resetB.drive(.high)
+        c.presetA.drive(.high)
+        try c.drive(c.presetB, uncertain)
+        c.expectWord("X00X")
+        try c.pulse(c.clockA)
+        try c.pulse(c.clockB)
+        try c.settle()
+        c.expectWord("X00X") // Both control outcomes suppress both clocks.
+
+        c.resetA.drive(.low)
+        try c.drive(c.presetA, .low) // Mask the uncertain R9 partner.
+        c.expectWord("X00X")
+        try c.pulse(c.clockB) // {0,9} → {2,1}
+        c.expectWord("00XX")
+        try c.settle()
+        try c.settle()
+        c.expectWord("00XX")
+        try c.pulse(c.clockB) // {2,1} → {4,3}
+        c.expectWord("0XXX")
+        try c.pulse(c.clockA) // {4,3} → {5,2}
+        c.expectWord("0XXX")
+
+        c.resetA.drive(.high)
+        try c.drive(c.presetA, .high)
+        try c.drive(c.presetB, .high)
+        c.expectWord("1001")
+        try c.drive(c.presetB, .low)
+        c.expectWord("0000")
+
+        try c.drive(c.resetA, .low)
+        try c.drive(c.presetB, uncertain)
+        try c.pulse(c.clockB) // Preset adds nine to the two clocked candidates.
+        c.expectWord("X0XX")
+        try c.settle()
+        c.expectWord("X0XX")
+    }
+
+    @Test(arguments: [CounterChip.ls92, .ls93], [false, true])
+    func ambiguousResetAndReceiverResolution(kind: CounterChip, automatic: Bool) throws {
+        let c = Circuit(kind, automatic: automatic)
+        let bResetPin = kind == .ls92 ? 7 : 3
+        let counted = kind == .ls92 ? "0010" : "0001"
+        let ambiguous = kind == .ls92 ? "00X0" : "000X"
+        let clock = kind == .ls92 ? c.clockB : c.clockA
+
+        for uncertain in [LogicState.undefined, .highImpedance] {
+            c.resetA.drive(.high)
+            try c.drive(c.resetB, .high)
+            try c.drive(c.resetA, .low)
+            try c.pulse(clock)
+            c.expectWord(counted)
+            try c.drive(c.resetB, uncertain)
+            c.expectWord(counted) // Known LOW masks X/Z before the reset can branch.
+            try c.drive(c.resetA, .high)
+            #expect(c.chip.pins[bResetPin]!.state == uncertain)
+            c.expectWord(ambiguous)
+            try c.settle()
+            c.expectWord(ambiguous)
+
+            try c.drive(c.resetA, .low)
+            try c.pulse(kind == .ls92 ? c.clockA : c.clockB)
+            c.expectWord(kind == .ls92 ? "00X1" : "001X")
+            try c.settle()
+            c.expectWord(kind == .ls92 ? "00X1" : "001X")
+        }
+
+        try c.drive(c.weakResetB, .high)
+        #expect(c.chip.pins[bResetPin]!.state == .high)
+        try c.drive(c.resetA, .high)
+        c.expectWord("0000")
+        try c.drive(c.resetB, .low) // Strong LOW wins over the weak pull-up.
+        try c.pulse(clock)
+        c.expectWord(counted)
+        try c.drive(c.competingResetB, .high)
+        #expect(c.chip.pins[bResetPin]!.state == .undefined)
+        c.expectWord(ambiguous)
+        try c.drive(c.resetB, .high)
+        c.expectWord("0000")
+    }
+
+    @Test(arguments: kinds, [false, true])
+    func restorationWithClockChangesWhileRailsAreInvalid(kind: CounterChip, automatic: Bool) throws {
+        let c = Circuit(kind, automatic: automatic)
+        c.resetA.drive(.high)
+        try c.drive(c.resetB, .high)
+        try c.drive(c.resetA, .low)
+        try c.pulse(c.clockA)
+        c.expectWord("0001")
+        try c.drive(c.clockB, .high)
+
+        try c.drive(c.supply, .highImpedance)
+        c.expectWord(automatic ? "0001" : "XXXX")
+        try c.drive(c.wrongSupply, .low)
+        #expect(c.chip.powerState == .incorrect)
+        c.expectWord(automatic ? "0001" : "XXXX")
+        try c.drive(c.clockB, .low)
+        c.expectWord(automatic ? "0011" : "XXXX")
+        c.wrongSupply.drive(.highImpedance)
+        try c.drive(c.supply, .high)
+        c.expectWord(automatic ? "0011" : "XXXX")
+        try c.drive(c.resetA, .high)
+        c.expectWord("0000")
+        try c.drive(c.resetA, .low)
+        try c.settle()
+        c.expectWord("0000")
+        try c.pulse(c.clockB)
+        c.expectWord("0010")
+    }
+
+    @Test(arguments: kinds, [false, true])
+    func cascadedPackagesSettleInEitherRegistrationOrder(kind: CounterChip, downstreamFirst: Bool) throws {
+        let downstream = SN74LSCounter(kind)
+        let c = Circuit(kind, automatic: false, downstream: downstream, downstreamFirst: downstreamFirst)
+        c.resetA.drive(.high)
+        try c.drive(c.resetB, .high)
+        try c.drive(c.resetA, .low)
+
+        let sequence = kind == .ls92 ? [0, 1, 2, 3, 4, 5, 8, 9, 10, 11, 12, 13] :
+            Array(0..<(kind == .ls90 ? 10 : 16))
+        for step in 1...(2 * sequence.count) {
+            try c.pulse(c.clockA)
+            let value = sequence[step % sequence.count]
+            c.expectWord((0..<4).reversed().map { value & (1 << $0) == 0 ? "0" : "1" }.joined())
+            let downstreamWord = ["0000", "0001", "0010"][step / sequence.count]
+            c.expectWord(downstreamWord, on: downstream)
+            try c.settle()
+            c.expectWord(downstreamWord, on: downstream)
+        }
+    }
+}

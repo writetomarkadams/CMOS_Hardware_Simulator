@@ -14,32 +14,48 @@ private func and(_ a: LogicState, _ b: LogicState) -> LogicState {
     return a == .high && b == .high ? .high : .undefined
 }
 
-private struct CounterSequence {
-    var count: Int?
-    let modulus: Int
-    private let edge = ClockEdgeDetector()
+// Only CD4017 and CD4026 use this clock/inhibit rule. Capture both
+// resolved pin levels on every pass, including while reset is asserted.
+private struct DecodedDecadeState {
+    private static let allCounts = Set(0..<10)
+    private var candidates = Self.allCounts
+    private var previousClock: LogicState = .undefined
+    private var previousInhibit: LogicState = .undefined
 
-    init(modulus: Int) { self.modulus = modulus }
-
-    mutating func update(clock: LogicState, reset: LogicState) {
-        let transition = edge.update(clock)
-        if reset == .high {
-            count = 0
-        } else if reset != .low || (clock != .low && clock != .high) {
-            count = nil
-        } else if transition == .rising, let count {
-            self.count = (count + 1) % modulus
+    mutating func update(clock: LogicState, inhibit: LogicState, reset: LogicState) {
+        defer {
+            previousClock = clock
+            previousInhibit = inhibit
         }
+
+        if reset == .high {
+            candidates = [0]
+            return
+        }
+
+        let risingClock = previousClock == .low && clock == .high
+        let stableInhibit = previousInhibit == inhibit
+        let fallingInhibit = previousInhibit == .high && inhibit == .low
+        let stableHighClock = previousClock == .high && clock == .high
+
+        if risingClock && stableInhibit {
+            let inhibitLevels = PresettableCounterState.possibilities(inhibit)
+            if inhibitLevels.contains(false) {
+                let advanced = Set(candidates.map { ($0 + 1) % 10 })
+                candidates = inhibitLevels.contains(true) ? candidates.union(advanced) : advanced
+            }
+        } else if fallingInhibit && stableHighClock {
+            candidates = Set(candidates.map { ($0 + 1) % 10 })
+        }
+
+        if reset != .low { candidates.insert(0) }
     }
 
-    mutating func invalidate() {
-        count = nil
-        edge.reset()
-    }
-
-    func bit(_ bit: Int) -> LogicState {
-        guard let count else { return .undefined }
-        return count & (1 << bit) == 0 ? .low : .high
+    func output(_ highAtCount: (Int) -> Bool) -> LogicState {
+        PresettableCounterState.consensus(
+            low: candidates.contains { !highAtCount($0) },
+            high: candidates.contains(where: highAtCount)
+        )
     }
 }
 
@@ -50,16 +66,16 @@ final class CD4017: PoweredChip {
         inputs: [(14, "CLK"), (13, "CLOCK INHIBIT"), (15, "RESET")],
         outputs: Array(zip(CD4017.outputPins, (0...9).map { "Q\($0)" })) + [(12, "CARRY OUT")]
     )
-    private var sequence = CounterSequence(modulus: 10)
+    private var sequence = DecodedDecadeState()
 
-    func powerDidFail() { sequence.invalidate() }
+    func powerDidFail() { sequence = DecodedDecadeState() }
 
     func evaluate() {
-        sequence.update(clock: and(pins[14]!.state, pins[13]!.state.inverted), reset: pins[15]!.state)
+        sequence.update(clock: pins[14]!.state, inhibit: pins[13]!.state, reset: pins[15]!.state)
         for (digit, number) in Self.outputPins.enumerated() {
-            pins[number]!.drive(sequence.count.map { $0 == digit ? .high : .low } ?? .undefined)
+            pins[number]!.drive(sequence.output { $0 == digit })
         }
-        pins[12]!.drive(sequence.count.map { $0 < 5 ? .high : .low } ?? .undefined)
+        pins[12]!.drive(sequence.output { $0 < 5 })
     }
 }
 
@@ -73,173 +89,144 @@ final class CD4026: PoweredChip {
         outputs: Array(zip(CD4026.segmentPins, "abcdefg".map(String.init))) +
             [(4, "DISPLAY ENABLE OUT"), (5, "CARRY OUT"), (14, "UNGATED c")]
     )
-    private var sequence = CounterSequence(modulus: 10)
+    private var sequence = DecodedDecadeState()
 
-    func powerDidFail() { sequence.invalidate() }
+    func powerDidFail() { sequence = DecodedDecadeState() }
 
     func evaluate() {
-        sequence.update(clock: and(pins[1]!.state, pins[2]!.state.inverted), reset: pins[15]!.state)
+        sequence.update(clock: pins[1]!.state, inhibit: pins[2]!.state, reset: pins[15]!.state)
         let enable = pins[3]!.state
         pins[4]!.drive(enable == .highImpedance ? .undefined : enable)
-        let pattern = sequence.count.map { Self.digits[$0] }
         for (number, segment) in zip(Self.segmentPins, "abcdefg") {
-            let decoded: LogicState = pattern.map { $0.contains(segment) ? .high : .low } ?? .undefined
+            let decoded = sequence.output { Self.digits[$0].contains(segment) }
             pins[number]!.drive(and(enable, decoded))
         }
-        pins[14]!.drive(pattern.map { $0.contains("c") ? .high : .low } ?? .undefined)
-        pins[5]!.drive(sequence.count.map { $0 < 5 ? .high : .low } ?? .undefined)
+        pins[14]!.drive(sequence.output { Self.digits[$0].contains("c") })
+        pins[5]!.drive(sequence.output { $0 < 5 })
     }
 }
 
 final class CD4516: PoweredChip {
-    static let outputPins = [6, 11, 14, 2]
-    static let presetPins = [4, 12, 13, 3]
+    static let outputPins = PresettableCounterState.outputPins
+    static let presetPins = PresettableCounterState.presetPins
     let supplyPins = (vdd: 16, vss: 8)
     let pins = counterPins(
         inputs: [(1, "PE"), (5, "CARRY IN"), (9, "RESET"), (10, "UP/DOWN"), (15, "CLK")] +
             Array(zip(CD4516.presetPins, (0...3).map { "P\($0)" })),
         outputs: Array(zip(CD4516.outputPins, (0...3).map { "Q\($0)" })) + [(7, "CARRY OUT")]
     )
-    private var count: Int?
-    private let clock = ClockEdgeDetector()
+    private var counter = PresettableCounterState(maximum: 15)
 
     func powerDidFail() {
-        count = nil
-        clock.reset()
+        counter.powerDidFail()
     }
 
     func evaluate() {
-        let edge = clock.update(pins[15]!.state)
-        let reset = pins[9]!.state
-        let preset = pins[1]!.state
-        if reset == .high {
-            count = 0
-        } else if reset != .low {
-            count = nil
-        } else if preset == .high {
-            var value = 0
-            var valid = true
-            for (bit, number) in Self.presetPins.enumerated() {
-                switch pins[number]!.state {
-                case .high: value |= 1 << bit
-                case .low: break
-                default: valid = false
-                }
-            }
-            count = valid ? value : nil
-        } else if preset != .low {
-            count = nil
-        } else if edge == .rising {
-            switch (pins[5]!.state, pins[10]!.state) {
-            case (.high, _): break
-            case (.low, .high): count = count.map { ($0 + 1) & 15 }
-            case (.low, .low): count = count.map { ($0 + 15) & 15 }
-            default: count = nil
-            }
-        }
-        for (bit, number) in Self.outputPins.enumerated() {
-            pins[number]!.drive(count.map { $0 & (1 << bit) == 0 ? .low : .high } ?? .undefined)
-        }
-        let carry: LogicState
-        if pins[5]!.state == .high {
-            carry = .high
-        } else if let count, pins[5]!.state == .low {
-            switch pins[10]!.state {
-            case .high: carry = count == 15 ? .low : .high
-            case .low: carry = count == 0 ? .low : .high
-            default: carry = (1...14).contains(count) ? .high : .undefined
-            }
-        } else {
-            carry = .undefined
-        }
-        pins[7]!.drive(carry)
+        counter.evaluate(pins)
     }
 }
 
 final class CD4029: PoweredChip {
-    static let outputPins = [6, 11, 14, 2] // Q1 through Q4, least significant first.
-    static let jamPins = [4, 12, 13, 3]
+    static let outputPins = PresettableCounterState.outputPins // Q1 through Q4, least significant first.
+    static let jamPins = PresettableCounterState.presetPins
     let supplyPins = (vdd: 16, vss: 8)
     let pins = counterPins(
         inputs: [(1, "PE"), (5, "CARRY IN"), (9, "BINARY/DECADE"), (10, "UP/DOWN"), (15, "CLK")] +
             Array(zip(CD4029.jamPins, (1...4).map { "JAM \($0)" })),
         outputs: Array(zip(CD4029.outputPins, (1...4).map { "Q\($0)" })) + [(7, "CARRY OUT")]
     )
-    private var count: Int?
+    private static let allCounts = Set(0..<16)
     private let clock = ClockEdgeDetector()
+    private var candidates = CD4029.allCounts
+    private var lastInputs: Inputs?
+    private var carry: LogicState = .undefined
+
+    private struct Inputs: Equatable {
+        let presetEnable: LogicState
+        let carryIn: LogicState
+        let binaryMode: LogicState
+        let direction: LogicState
+        let jam: [LogicState]
+    }
 
     func powerDidFail() {
-        count = nil
+        candidates = Self.allCounts
+        lastInputs = nil
         clock.reset()
     }
 
     func evaluate() {
-        let edge = clock.update(pins[15]!.state)
-        let enable = pins[5]!.state.inverted
-        let mode = pins[9]!.state
-        let direction = pins[10]!.state
-        let preset = pins[1]!.state
-        switch preset {
-        case .high:
-            count = presetValue()
-        case .low:
-            if edge == .rising && enable != .low {
-                count = enable == .high ? nextCount(mode: mode, direction: direction) : nil
-            }
-        default:
-            count = nil
+        let rising = clock.update(pins[15]!.state) == .rising
+        let presetEnable = pins[1]!.state
+        let inputs = Inputs(
+            presetEnable: presetEnable,
+            carryIn: pins[5]!.state,
+            binaryMode: pins[9]!.state,
+            direction: pins[10]!.state,
+            jam: presetEnable == .low ? [] : Self.jamPins.map { pins[$0]!.state }
+        )
+        // The engine resolves nets before evaluating components. All counters
+        // see the pre-edge carry on the first pass. Later passes may update CO
+        // from changed inputs, while the detector consumes the edge only once.
+        if rising || inputs != lastInputs {
+            update(inputs, rising: rising)
+            lastInputs = inputs
         }
 
         for (bit, number) in Self.outputPins.enumerated() {
-            pins[number]!.drive(count.map { $0 & (1 << bit) == 0 ? .low : .high } ?? .undefined)
+            let mask = 1 << bit
+            let hasLow = candidates.contains { $0 & mask == 0 }
+            let hasHigh = candidates.contains { $0 & mask != 0 }
+            pins[number]!.drive(PresettableCounterState.consensus(low: hasLow, high: hasHigh))
         }
-        pins[7]!.drive(and(enable, terminalCount(mode: mode, direction: direction)).inverted)
+        pins[7]!.drive(carry)
     }
 
-    private func presetValue() -> Int? {
-        var value = 0
-        for (bit, number) in Self.jamPins.enumerated() {
-            switch pins[number]!.state {
-            case .high: value |= 1 << bit
-            case .low: break
-            default: return nil
+    private func update(_ inputs: Inputs, rising: Bool) {
+        let preset: Set<Int> = inputs.jam.isEmpty ? [] : Self.allCounts.filter { value in
+            inputs.jam.enumerated().allSatisfy { bit, state in
+                let high = value & (1 << bit) != 0
+                return PresettableCounterState.possibilities(state).contains(high)
             }
         }
-        return value
+
+        var next: Set<Int> = []
+        var carryLow = false
+        var carryHigh = false
+        for binary in PresettableCounterState.possibilities(inputs.binaryMode) {
+            let modulus = binary ? 16 : 10
+            for up in PresettableCounterState.possibilities(inputs.direction) {
+                let terminal = up ? modulus - 1 : 0
+                for inhibited in PresettableCounterState.possibilities(inputs.carryIn) {
+                    var branch = preset
+                    if inputs.presetEnable != .high {
+                        if rising && !inhibited {
+                            branch.formUnion(advancedCounts(modulus: modulus, up: up))
+                        } else {
+                            branch.formUnion(candidates)
+                        }
+                    }
+
+                    next.formUnion(branch)
+                    // Use the same mode, direction and CI for the transition
+                    // and the resulting carry. The merged states lose that
+                    // association, so keep this consensus until inputs change.
+                    let invalidDecade = branch.contains { $0 >= modulus }
+                    carryLow = carryLow || (!inhibited && (invalidDecade || branch.contains(terminal)))
+                    carryHigh = carryHigh || inhibited || branch.contains { $0 != terminal }
+                }
+            }
+        }
+        candidates = next
+        carry = PresettableCounterState.consensus(low: carryLow, high: carryHigh)
     }
 
-    private func nextCount(mode: LogicState, direction: LogicState) -> Int? {
-        let modulus: Int
-        switch mode {
-        case .high: modulus = 16
-        case .low: modulus = 10
-        default: return nil
-        }
-        // An asynchronous JAM can load any four-bit value. The decade
-        // sequence is modeled only for valid BCD states.
-        guard let count, count < modulus else { return nil }
-        switch direction {
-        case .high: return (count + 1) % modulus
-        case .low: return (count + modulus - 1) % modulus
-        default: return nil
-        }
-    }
-
-    private func terminalCount(mode: LogicState, direction: LogicState) -> LogicState {
-        guard let count else { return .undefined }
-        if mode != .high && count > 9 { return .undefined }
-        let up: LogicState
-        switch mode {
-        case .high: up = count == 15 ? .high : .low
-        case .low: up = count == 9 ? .high : .low
-        default: up = count == 9 ? .undefined : .low
-        }
-        let down: LogicState = count == 0 ? .high : .low
-        switch direction {
-        case .high: return up
-        case .low: return down
-        default: return up == down ? up : .undefined
-        }
+    private func advancedCounts(modulus: Int, up: Bool) -> Set<Int> {
+        // Any enabled decade transition from an invalid BCD candidate has an
+        // unspecified result. Its full four-bit range subsumes other branches.
+        guard !candidates.contains(where: { $0 >= modulus }) else { return Self.allCounts }
+        let step = up ? 1 : modulus - 1
+        return Set(candidates.map { ($0 + step) % modulus })
     }
 }
 
@@ -249,15 +236,62 @@ enum DualCounterKind: String, CaseIterable {
     var modulus: Int { self == .bcd ? 10 : 16 }
 }
 
+private struct DualCounterSequence {
+    let modulus: Int
+    private var candidates: Set<Int>
+    private var previousClock: LogicState = .undefined
+    private var previousEnable: LogicState = .undefined
+
+    init(modulus: Int) {
+        self.modulus = modulus
+        candidates = Set(0..<modulus)
+    }
+
+    mutating func update(clock: LogicState, enable: LogicState, reset: LogicState) {
+        defer {
+            previousClock = clock
+            previousEnable = enable
+        }
+
+        if reset == .high {
+            candidates = [0]
+            return
+        }
+
+        // SCHS076D: qualify the physical edge using the other resolved pin.
+        // A sample with both pins changing leaves edge ordering to Phase 5.
+        var countAllowed: [Bool] = [false]
+        if previousClock == .low && clock == .high && previousEnable == enable {
+            countAllowed = PresettableCounterState.possibilities(enable)
+        } else if previousEnable == .high && enable == .low && previousClock == clock {
+            countAllowed = PresettableCounterState.possibilities(clock.inverted)
+        }
+
+        if countAllowed.contains(true) {
+            let advanced = Set(candidates.map { ($0 + 1) % modulus })
+            candidates = countAllowed.contains(false) ? candidates.union(advanced) : advanced
+        }
+        if reset != .low { candidates.insert(0) }
+    }
+
+    func bit(_ bit: Int) -> LogicState {
+        let mask = 1 << bit
+        return PresettableCounterState.consensus(
+            low: candidates.contains { $0 & mask == 0 },
+            high: candidates.contains { $0 & mask != 0 }
+        )
+    }
+}
+
 final class DualCounter: PoweredChip {
     let kind: DualCounterKind
     let supplyPins = (vdd: 16, vss: 8)
     let pins: [Int: Pin]
-    private var sequences: [CounterSequence]
+    private var sequences: [DualCounterSequence]
 
     init(_ kind: DualCounterKind) {
         self.kind = kind
-        sequences = [CounterSequence(modulus: kind.modulus), CounterSequence(modulus: kind.modulus)]
+        sequences = Array(repeating: DualCounterSequence(modulus: kind.modulus), count: 2)
         pins = counterPins(
             inputs: [(1, "CLK A"), (2, "ENABLE A"), (7, "RESET A"),
                      (9, "CLK B"), (10, "ENABLE B"), (15, "RESET B")],
@@ -268,15 +302,17 @@ final class DualCounter: PoweredChip {
     }
 
     func powerDidFail() {
-        for index in sequences.indices { sequences[index].invalidate() }
+        for index in sequences.indices { sequences[index] = DualCounterSequence(modulus: kind.modulus) }
     }
 
     func evaluate() {
         for unit in sequences.indices {
             let offset = unit * 8
-            // CLOCK OR NOT ENABLE counts on CLK rising with EN high, or EN falling with CLK low.
-            let effectiveClock = and(pins[1 + offset]!.state.inverted, pins[2 + offset]!.state).inverted
-            sequences[unit].update(clock: effectiveClock, reset: pins[7 + offset]!.state)
+            sequences[unit].update(
+                clock: pins[1 + offset]!.state,
+                enable: pins[2 + offset]!.state,
+                reset: pins[7 + offset]!.state
+            )
             for bit in 0..<4 { pins[3 + offset + bit]!.drive(sequences[unit].bit(bit)) }
         }
     }

@@ -178,6 +178,7 @@ struct AdditionalCounterTests {
         chip.pins[15]!.receive(.high)
         chip.evaluate()
         #expect(readBits(chip, CD4029.outputPins) == nil)
+        #expect(chip.pins[7]!.driveState == .high) // 0 with CI low, or 15 with CI high.
         chip.pins[1]!.receive(.high)
         chip.pins[3]!.receive(.low)
         chip.evaluate()

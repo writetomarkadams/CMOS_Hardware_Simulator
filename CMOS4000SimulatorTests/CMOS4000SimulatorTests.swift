@@ -491,6 +491,8 @@ struct CD4510Tests {
     @Test("CD4510 Carry Out responds to Carry In and direction without a clock edge")
     func carryOutControls() {
         let chip = CD4510()
+        chip.pins[1]?.receive(.low)
+        chip.pins[9]?.receive(.low)
         chip.pins[15]?.receive(.low)
         chip.pins[10]?.receive(.low)
         chip.pins[5]?.receive(.high)
@@ -512,9 +514,143 @@ struct CD4510Tests {
         #expect(chip.count == 0)
     }
 
-    @Test("Cascaded CD4510 counters traverse all 100 counts in both directions", arguments: [true, false])
-    func synchronousCascade(onesFirst: Bool) throws {
+    @Test("CD4510 loses its count and recovers with reset or preset", arguments: [true, false])
+    func powerLossRecovery(usePreset: Bool) throws {
         let engine = SimulationEngine()
+        let chip = CD4510()
+        let supply = WorkbenchPower(.fiveVolts)
+        let ground = WorkbenchPower(.ground)
+        let vdd = try #require(supply.pins[1])
+        let vddNet = Net(name: "VDD")
+        vddNet.connect(vdd)
+        vddNet.connect(try #require(chip.pins[16]))
+        let vssNet = Net(name: "VSS")
+        vssNet.connect(try #require(ground.pins[1]))
+        vssNet.connect(try #require(chip.pins[8]))
+        engine.addNet(vddNet)
+        engine.addNet(vssNet)
+        engine.addComponent(supply)
+        engine.addComponent(ground)
+        engine.addComponent(chip)
+
+        let clock = try #require(chip.pins[15])
+        let reset = try #require(chip.pins[9])
+        let presetEnable = try #require(chip.pins[1])
+        let carryIn = try #require(chip.pins[5])
+        let carryOut = try #require(chip.pins[7])
+        let outputs = try [6, 11, 14, 2].map { number in
+            try #require(chip.pins[number])
+        }
+        let presetBits = try [4, 12, 13, 3].map { number in
+            try #require(chip.pins[number])
+        }
+        for (pin, state) in zip(presetBits, [LogicState.high, .low, .low, .high]) {
+            pin.receive(state)
+        }
+
+        presetEnable.receive(.high)
+        reset.receive(.low)
+        carryIn.receive(.low)
+        try #require(chip.pins[10]).receive(.high)
+        clock.receive(.low)
+        try #require(engine.settle())
+        #expect(chip.count == 9)
+        #expect(carryOut.driveState == .low)
+        presetEnable.receive(.low)
+
+        vdd.drive(usePreset ? .low : .highImpedance)
+        try #require(engine.settle())
+        #expect(chip.count == nil)
+        #expect(outputs.allSatisfy { $0.driveState == .undefined })
+        #expect(carryOut.driveState == .undefined)
+
+        clock.receive(.high)
+        vdd.drive(.high)
+        try #require(engine.settle())
+        #expect(chip.count == nil)
+        #expect(outputs.allSatisfy { $0.driveState == .undefined })
+        #expect(carryOut.driveState == .undefined)
+
+        carryIn.receive(.high)
+        try #require(engine.settle())
+        #expect(carryOut.driveState == .high)
+        #expect(outputs.allSatisfy { $0.driveState == .undefined })
+        carryIn.receive(.low)
+        for level: LogicState in [.low, .high] {
+            clock.receive(level)
+            try #require(engine.settle())
+            #expect(chip.count == nil)
+        }
+
+        let recovery = usePreset ? presetEnable : reset
+        recovery.receive(.high)
+        try #require(engine.settle())
+        let recoveredCount = usePreset ? 9 : 0
+        #expect(chip.count == recoveredCount)
+        let recoveredBits: [LogicState] = usePreset ? [.high, .low, .low, .high] : [.low, .low, .low, .low]
+        #expect(outputs.map(\.driveState) == recoveredBits)
+        #expect(carryOut.driveState == (usePreset ? .low : .high))
+
+        recovery.receive(.low)
+        try #require(engine.settle())
+        #expect(chip.count == recoveredCount)
+
+        clock.receive(.low)
+        try #require(engine.settle())
+        clock.receive(.high)
+        try #require(engine.settle())
+        #expect(chip.count == (usePreset ? 0 : 1))
+        #expect(carryOut.driveState == .high)
+    }
+
+    @Test("CD4510 samples a high clock when Automatic Power restores an unpowered chip")
+    func automaticPowerRestoration() throws {
+        let engine = SimulationEngine()
+        let chip = CD4510()
+        engine.addComponent(chip)
+        let reset = try #require(chip.pins[9])
+        let clock = try #require(chip.pins[15])
+        try #require(chip.pins[1]).receive(.low)
+        try #require(chip.pins[5]).receive(.low)
+        try #require(chip.pins[10]).receive(.high)
+        reset.receive(.low)
+        clock.receive(.low)
+
+        engine.automaticallyPowerChips = true
+        try #require(engine.settle())
+        #expect(chip.count == 0)
+        clock.receive(.high)
+        try #require(engine.settle())
+        #expect(chip.count == 1)
+        clock.receive(.low)
+        try #require(engine.settle())
+
+        engine.automaticallyPowerChips = false
+        try #require(engine.settle())
+        #expect(chip.count == nil)
+
+        clock.receive(.high)
+        reset.receive(.high)
+        engine.automaticallyPowerChips = true
+        try #require(engine.settle())
+        #expect(chip.count == 0)
+
+        reset.receive(.low)
+        try #require(engine.settle())
+        #expect(chip.count == 0)
+
+        clock.receive(.low)
+        try #require(engine.settle())
+        clock.receive(.high)
+        try #require(engine.settle())
+        #expect(chip.count == 1)
+    }
+
+    @Test("Cascaded CD4510 counters traverse all 100 counts in both directions",
+          arguments: [true, false], [PowerMode.explicit, .automatic])
+    func synchronousCascade(onesFirst: Bool, powerMode: PowerMode) throws {
+        let engine = SimulationEngine()
+        engine.automaticallyPowerChips = powerMode == .automatic
         let ones = CD4510()
         let tens = CD4510()
         let clock = Pin(number: 1, name: "CLOCK_SOURCE", direction: .output)
@@ -527,7 +663,9 @@ struct CD4510Tests {
         directionNet.connect(direction)
 
         for chip in onesFirst ? [ones, tens] : [tens, ones] {
-            connectTestPower(chip, to: engine)
+            if powerMode == .explicit {
+                connectTestPower(chip, to: engine)
+            }
             engine.addComponent(chip)
             chip.pins[1]?.receive(.low) // Preset disabled
             chip.pins[9]?.receive(.low) // Reset inactive

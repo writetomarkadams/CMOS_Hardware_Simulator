@@ -3,11 +3,10 @@ final class CD4510: LogicComponent {
     
     let pins: [Int: Pin]
     
-    private var counter = BCDCountState()
-    private let clockDetector = ClockEdgeDetector()
+    private var counter = PresettableCounterState(maximum: 9, initialCount: 0)
     
-    var count: Int {
-        counter.value
+    var count: Int? {
+        counter.count
     }
     
     init() {
@@ -42,74 +41,11 @@ final class CD4510: LogicComponent {
         ]
     }
     
-    func evaluate() {
-        
-        let clock = pins[15]!.state
-        let direction = pins[10]!.state
-        let reset = pins[9]!.state
-        let carryIn = pins[5]!.state
-        let parallelEnable = pins[1]!.state
-        
-        // Always observe clock transitions.
-        let edge = clockDetector.update(clock)
-        
-        // RESET is asynchronous and has highest priority.
-        if reset == .high {
-            counter.reset()
-        }
-        
-        // Parallel Enable is asynchronous and active HIGH.
-        else if reset == .low && parallelEnable == .high {
-            
-            let presetPins = [4, 12, 13, 3] // P1, P2, P3, P4
-            var presetValue = 0
-            var validInputs = true
-            
-            for (bit, pinNumber) in presetPins.enumerated() {
-                switch pins[pinNumber]!.state {
-                case .high:
-                    presetValue |= (1 << bit)
-                case .low:
-                    break
-                default:
-                    validInputs = false
-                }
-            }
-            
-            if validInputs {
-                counter.load(presetValue)
-            }
-        }
-        
-        // Normal counting on rising clock edges.
-        else if reset == .low &&
-                    parallelEnable == .low &&
-                    edge == .rising &&
-                    carryIn == .low {
-            
-            if direction == .high {
-                counter.countUp()
-            } else if direction == .low {
-                counter.countDown()
-            }
-        }
-        
-        // Drive BCD outputs.
-        let bits = counter.bits
-        
-        pins[6]!.drive(bits[0])   // Q1
-        pins[11]!.drive(bits[1])  // Q2
-        pins[14]!.drive(bits[2])  // Q3
-        pins[2]!.drive(bits[3])   // Q4
+    func powerDidFail() {
+        counter.powerDidFail()
+    }
 
-        // Carry Out is active LOW at the terminal count when Carry In is LOW.
-        switch (counter.value, direction, carryIn) {
-        case (9, .high, .low), (0, .low, .low):
-            pins[7]!.drive(.low)
-        case (_, _, .high), (9, .low, _), (0, .high, _), (1...8, _, _):
-            pins[7]!.drive(.high)
-        default:
-            pins[7]!.drive(.undefined)
-        }
+    func evaluate() {
+        counter.evaluate(pins)
     }
 }
