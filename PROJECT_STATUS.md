@@ -444,9 +444,9 @@ Push changes before switching computers and pull before editing on the other Mac
 
 ## 9. Current Session / Handoff Notes
 
-**Last confirmed milestone:** On 23 November 2026 the macOS Debug build succeeded and all 150 automated tests passed across 37 suites. Coverage includes package and schematic pin geometry, CD4070 XOR units, CD4510/CD4511 physical pin mapping, wired display behaviour, wire defaults and recolouring, rotation and connected moves, scope probe and cursor behaviour, and circuit archive round-trips.
+**Last confirmed milestone:** On 27 November 2026, the native arm64 macOS Debug build succeeded and all 209 tests passed across 41 suites at commit `0508b2b`. Coverage includes 74HC08 logic, SN74LS90/92/93 counters, mechanical switches, series transistor behaviour, and existing clock regressions.
 
-The rebuilt native app opened successfully. The View menu switched from Schematic to Physical DIP and the drawing palette changed from Green to Black. In the frozen oscilloscope, dragging both cursor handles updated both timestamps, Δt and the reciprocal. This pass did not visually compare the five component symbols and physical faces or exercise right-click recolouring, probe placement, native Save/Open, or dragging and rotating wired parts by mouse. Those paths were reviewed in code and their underlying behaviour was covered where available by the automated suite.
+During the 23 November native UI check, the rebuilt app opened successfully. The View menu switched from Schematic to Physical DIP and the drawing palette changed from Green to Black. In the frozen oscilloscope, dragging both cursor handles updated both timestamps, Δt and the reciprocal. This pass did not visually compare the five component symbols and physical faces or exercise right-click recolouring, probe placement, native Save/Open, or dragging and rotating wired parts by mouse. Those paths were reviewed in code and their underlying behaviour was covered where available by the automated suite.
 
 **Suggested next task:** Continue sequential power-loss handling with CD4510, keeping its unknown-input and clock-transition work in a clearly scoped stage.
 
