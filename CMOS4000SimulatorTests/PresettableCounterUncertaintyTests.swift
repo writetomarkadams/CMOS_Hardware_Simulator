@@ -222,12 +222,206 @@ struct PresettableCounterUncertaintyTests {
         #expect(f.q == "0001")
     }
 
+    @Test(arguments: uncertain, powerModes)
+    func correlatedBridgeAndReturn(clock: LogicState, mode: PowerMode) {
+        for decimal in [true, false] {
+            let f = Fixture(decimal: decimal, mode: mode)
+            f.load(4)
+            f.drive(15, clock)
+            f.settle()
+            #expect(f.q == "010X")
+            for _ in 0..<4 { f.settle() }
+            f.drive(15, .high)
+            f.settle()
+            #expect(f.q == "0101")
+
+            f.drive(15, .low)
+            f.settle()
+            f.load(4)
+            f.drive(15, clock)
+            f.settle()
+            f.drive(15, .low)
+            f.settle()
+            #expect(f.q == "010X")
+            f.drive(15, .high)
+            f.settle()
+            #expect(f.q == "01XX") // Both the hold and pulse histories survived.
+        }
+    }
+
+    @Test(arguments: uncertain, powerModes)
+    func separatelyPublishedAndMixedSamples(clock: LogicState, mode: PowerMode) {
+        for decimal in [true, false] {
+            let f = Fixture(decimal: decimal, mode: mode)
+            f.load(4)
+            f.drive(15, clock)
+            f.settle()
+            f.inputs[15]!.publishClockDrive(clock)
+            f.settle()
+            f.drive(15, .high)
+            f.settle()
+            #expect(f.q == "01XX") // One or two rises.
+
+            f.drive(15, .low)
+            f.settle()
+            f.load(4)
+            f.drive(15, clock)
+            f.settle()
+            f.drive(15, clock == .undefined ? .highImpedance : .undefined)
+            f.settle()
+            f.drive(15, .high)
+            f.settle()
+            #expect(f.q == "01XX")
+
+            f.drive(15, .low)
+            f.settle()
+            f.load(4)
+            f.drive(15, .highImpedance)
+            f.settle()
+            let source = f.inputs[15]!
+            let net = f.engine.nets.first { $0.pins.contains { $0 === source } }!
+            let floatingDriver = Pin(number: 1, name: "New released driver", direction: .output)
+            net.connect(floatingDriver)
+            f.settle()
+            #expect(net.state == .highImpedance)
+            f.drive(15, .high)
+            f.settle()
+            #expect(f.q == "01XX")
+        }
+    }
+
+    @Test(arguments: uncertain, powerModes)
+    func controlChangesAtEitherBoundary(clock: LogicState, mode: PowerMode) {
+        for decimal in [true, false] {
+            for inhibitFirst in [true, false] {
+                let f = Fixture(decimal: decimal, mode: mode)
+                f.load(4)
+                f.drive(5, inhibitFirst ? .high : .low)
+                f.drive(15, clock)
+                f.settle()
+                f.drive(5, inhibitFirst ? .low : .high)
+                f.drive(15, .high)
+                f.settle()
+                #expect(f.q == "010X")
+                f.drive(5, .low)
+                f.settle()
+                #expect(f.q == "010X")
+            }
+
+            let f = Fixture(decimal: decimal, mode: mode)
+            f.load(4)
+            f.drive(15, clock)
+            f.settle()
+            f.setPreset(6)
+            f.drive(1, .high)
+            f.drive(9, .high)
+            f.settle()
+            #expect(f.q == "0000")
+            f.drive(9, .low)
+            f.settle()
+            #expect(f.q == "0110")
+            f.drive(1, .low)
+            f.settle()
+            #expect(f.q == "0110")
+            f.drive(15, .high)
+            f.settle()
+            #expect(f.q == "011X") // Release preserves both previous binary levels.
+        }
+    }
+
+    @Test(arguments: [LogicState.low, .high, .undefined, .highImpedance], powerModes)
+    func restoreAtEveryClockLevel(clock: LogicState, mode: PowerMode) {
+        let startup = Fixture(decimal: true, mode: mode)
+        startup.drive(15, clock)
+        startup.settle()
+        #expect(startup.q == "0000")
+
+        for decimal in [true, false] {
+            let f = Fixture(decimal: decimal, mode: mode)
+            f.load(4)
+            f.supply.pins[1]!.drive(.highImpedance)
+            f.settle()
+            #expect(f.q == (mode == .explicit ? "XXXX" : "0100"))
+            f.drive(15, clock)
+            f.settle()
+            f.setPreset(4)
+            f.drive(1, .high)
+            f.supply.pins[1]!.drive(.high)
+            f.settle()
+            #expect(f.q == "0100")
+            f.drive(1, .low)
+            f.settle()
+            #expect(f.q == "0100")
+            f.drive(15, .high)
+            f.settle()
+            let expected = clock == .low ? "0101" : clock == .high ? "0100" : "010X"
+            #expect(f.q == expected)
+        }
+    }
+
+    @Test(arguments: [true, false], powerModes)
+    func clockContentionAndUnrelatedActivity(decimal: Bool, mode: PowerMode) {
+        let f = Fixture(decimal: decimal, mode: mode)
+        let source = f.inputs[15]!
+        let net = f.engine.nets.first { $0.pins.contains { $0 === source } }!
+        let pull = Pin(number: 1, name: "Clock pull", direction: .output, isWeakDriver: true)
+        pull.drive(.low)
+        net.connect(pull)
+        f.drive(15, .highImpedance)
+        f.load(4)
+        #expect(net.state == .low)
+        let conflict = Pin(number: 1, name: "Clock conflict", direction: .output)
+        conflict.drive(.low)
+        net.connect(conflict)
+        f.drive(15, .high)
+        f.settle()
+        #expect(net.state == .undefined)
+        pull.drive(.high) // Masked by the strong tier.
+        f.setPreset(9) // Unrelated while PE is LOW.
+        let unrelated = Pin(number: 1, name: "Unrelated source", direction: .output)
+        let otherNet = Net(name: unrelated.name)
+        otherNet.connect(unrelated)
+        f.engine.addNet(otherNet)
+        for state in [LogicState.low, .high, .undefined, .highImpedance] {
+            unrelated.drive(state)
+            f.settle()
+        }
+        conflict.drive(.highImpedance)
+        f.settle()
+        #expect(f.q == "0101")
+
+        f.drive(15, .low)
+        f.settle()
+        f.load(4)
+        conflict.drive(.high)
+        f.settle()
+        #expect(net.state == .undefined)
+        conflict.drive(.undefined) // A different winning driver observation, still X.
+        f.settle()
+        #expect(net.state == .undefined)
+        conflict.drive(.highImpedance)
+        f.drive(15, .high)
+        f.settle()
+        #expect(f.q == "01XX")
+    }
+
     @Test(arguments: [true, false], powerModes)
     func binaryCommonClockCascade(lowCounterFirst: Bool, mode: PowerMode) {
+        commonClockCascade(decimal: false, lowCounterFirst: lowCounterFirst, mode: mode)
+    }
+
+    @Test(arguments: [true, false], powerModes)
+    func decimalCommonClockCascade(lowCounterFirst: Bool, mode: PowerMode) {
+        commonClockCascade(decimal: true, lowCounterFirst: lowCounterFirst, mode: mode)
+    }
+
+    private func commonClockCascade(decimal: Bool, lowCounterFirst: Bool, mode: PowerMode) {
         let engine = SimulationEngine()
         engine.automaticallyPowerChips = mode == .automatic
-        let low = CD4516()
-        let high = CD4516()
+        let low: any PoweredChip = decimal ? CD4510() : CD4516()
+        let high: any PoweredChip = decimal ? CD4510() : CD4516()
+        let radix = decimal ? 10 : 16
+        let modulus = radix * radix
         for chip in lowCounterFirst ? [low, high] : [high, low] {
             engine.addComponent(chip)
         }
@@ -259,9 +453,9 @@ struct PresettableCounterUncertaintyTests {
             for step in 1...32 {
                 clock.drive(.high)
                 #expect(engine.settle())
-                let expected = (up ? step : -step) & 255
-                #expect(Int(Self.q(low), radix: 2) == (expected & 15))
-                #expect(Int(Self.q(high), radix: 2) == (expected >> 4))
+                let expected = (up ? step : modulus - step) % modulus
+                #expect(Int(Self.q(low), radix: 2) == expected % radix)
+                #expect(Int(Self.q(high), radix: 2) == expected / radix)
                 clock.drive(.low)
                 #expect(engine.settle())
             }

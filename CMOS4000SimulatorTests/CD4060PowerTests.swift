@@ -187,7 +187,7 @@ struct CD4060PowerTests {
         try circuit.driveClock(.high)
         try circuit.driveClock(resetLevel)
         try circuit.driveClock(.low)
-        expectOutputs(.low) // HIGH → X/Z → LOW is not a definite falling edge.
+        expectOutputs(.high) // Either possible falling boundary advances from 7 to 8.
         try circuit.pulse()
         expectOutputs(.high)
     }
@@ -256,6 +256,164 @@ struct CD4060PowerTests {
         try circuit.driveClock(.low)
         #expect(circuit.reset.state == .high)
         #expect(circuit.outputs.allSatisfy { $0 == .low })
+    }
+
+    private struct WiredClock {
+        let circuit: Circuit
+        let driver = Pin(number: 1, name: "Clock drive", direction: .output)
+        let net = Net(name: "Clock")
+
+        init(automaticPower: Bool) {
+            circuit = Circuit(automaticPower: automaticPower)
+            if automaticPower {
+                circuit.supply.drive(.highImpedance)
+                circuit.ground.drive(.highImpedance)
+            }
+            net.connect(driver)
+            net.connect(circuit.clock)
+            circuit.engine.addNet(net)
+        }
+
+        func settle() throws {
+            try #require(circuit.engine.settle())
+        }
+
+        func drive(_ level: LogicState) throws {
+            driver.drive(level)
+            try settle()
+        }
+
+        func pulse(_ count: Int) throws {
+            for _ in 0..<count {
+                try drive(.high)
+                try drive(.low)
+            }
+        }
+
+        func initialize() throws {
+            circuit.reset.receive(.high)
+            try drive(.low)
+            circuit.reset.receive(.low)
+            try settle()
+        }
+
+        func expectCounts(_ counts: [Int]) {
+            let expected: [LogicState] = Circuit.dividerPins.map { divider in
+                let mask = divider.ratio / 2
+                let high = counts.first! & mask != 0
+                return counts.allSatisfy { ($0 & mask != 0) == high }
+                    ? (high ? .high : .low) : .undefined
+            }
+            #expect(circuit.outputs == expected)
+        }
+    }
+
+    @Test("CD4060 correlates uncertain falling bridges and returns",
+          arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func correlatedClock(automaticPower: Bool, unknown: LogicState) throws {
+        let clock = WiredClock(automaticPower: automaticPower)
+        try clock.initialize()
+        try clock.pulse(7)
+        try clock.drive(.high)
+        try clock.drive(unknown)
+        clock.expectCounts([7, 8])
+        for _ in 0..<3 { try clock.settle() }
+        try clock.drive(.low)
+        clock.expectCounts([8])
+
+        try clock.initialize()
+        try clock.pulse(7)
+        try clock.drive(.high)
+        try clock.drive(unknown)
+        try clock.drive(.high)
+        clock.expectCounts([7, 8])
+        try clock.drive(.low)
+        clock.expectCounts([8, 9])
+    }
+
+    @Test("CD4060 distinguishes published clock events and keeps phase during reset",
+          arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func sameSymbolAndReset(automaticPower: Bool, unknown: LogicState) throws {
+        let clock = WiredClock(automaticPower: automaticPower)
+        try clock.initialize()
+        try clock.pulse(14)
+        try clock.drive(.high)
+        try clock.drive(unknown)
+        try clock.drive(unknown)
+        clock.expectCounts([14, 15])
+        clock.driver.publishClockDrive(unknown)
+        try clock.settle()
+        try clock.drive(.low)
+        clock.expectCounts([15, 16])
+
+        try clock.drive(unknown)
+        clock.circuit.reset.receive(.high)
+        try clock.settle()
+        clock.expectCounts([0])
+        clock.circuit.reset.receive(.low)
+        try clock.settle()
+        clock.expectCounts([0])
+        try clock.drive(.low)
+        try clock.pulse(7)
+        clock.expectCounts([7, 8])
+    }
+
+    @Test("CD4060 correlates a contended clock and ignores masked weak drive changes",
+          arguments: [false, true])
+    func resolvedClock(automaticPower: Bool) throws {
+        let clock = WiredClock(automaticPower: automaticPower)
+        let pull = Pin(number: 2, name: "Weak clock pull", direction: .output, isWeakDriver: true)
+        let opposing = Pin(number: 3, name: "Opposing clock", direction: .output)
+        clock.net.connect(pull)
+        clock.net.connect(opposing)
+        pull.drive(.low)
+        try clock.initialize()
+        try clock.pulse(7)
+        try clock.drive(.highImpedance)
+        #expect(clock.circuit.clock.state == .low)
+        try clock.drive(.high)
+        opposing.drive(.low)
+        try clock.settle()
+        #expect(clock.circuit.clock.state == .undefined)
+        clock.expectCounts([7, 8])
+        pull.publishClockDrive(.high)
+        try clock.settle()
+        pull.drive(.low)
+        clock.driver.drive(.highImpedance)
+        try clock.settle()
+        clock.expectCounts([8])
+        opposing.drive(.highImpedance)
+        try clock.settle()
+        #expect(clock.circuit.clock.state == .low)
+        clock.expectCounts([8])
+    }
+
+    @Test("CD4060 seeds all clock levels at startup and power restoration",
+          arguments: [false, true], [LogicState.low, .high, .undefined, .highImpedance])
+    func startupAndRestore(automaticPower: Bool, initial: LogicState) throws {
+        let clock = WiredClock(automaticPower: automaticPower)
+        clock.circuit.reset.receive(.low)
+        try clock.drive(initial)
+        #expect(clock.circuit.outputs.allSatisfy { $0 == .undefined })
+        try clock.initialize()
+        try clock.pulse(8)
+        clock.expectCounts([8])
+
+        clock.circuit.engine.automaticallyPowerChips = false
+        clock.circuit.supply.drive(.highImpedance)
+        clock.circuit.reset.receive(.high)
+        try clock.drive(initial)
+        #expect(clock.circuit.outputs.allSatisfy { $0 == .undefined })
+        clock.circuit.engine.automaticallyPowerChips = automaticPower
+        if !automaticPower { clock.circuit.supply.drive(.high) }
+        try clock.settle()
+        clock.expectCounts([0])
+        clock.circuit.reset.receive(.low)
+        try clock.settle()
+        try clock.pulse(7)
+        clock.expectCounts([7])
+        try clock.pulse(1)
+        clock.expectCounts([8])
     }
 
     @Test("CD4060 pin 3 clocks a CD4027 to produce 1 Hz from 32,768 Hz")
@@ -327,5 +485,123 @@ struct CD4060PowerTests {
             previousQ14 = transition.q14
             previousQ = transition.q
         }
+    }
+}
+
+extension CD4060PowerTests {
+    private func exactCounts(_ bucket: CD4060.Candidates) -> Set<Int> {
+        Set((0..<bucket.rangeCount).flatMap { bucket[$0] })
+    }
+
+    @Test("CD4060 inline and fragmented buckets match exact 14-bit set operations")
+    func intervalStorage() throws {
+        typealias Bucket = CD4060.Candidates
+        let mask = 0x3FFF
+        let buckets: [Bucket] = [
+            .single(0), .single(1), .single(7), .single(mask),
+            .interval(0...9), .interval(2...12), .interval(8...14),
+            .interval(0...(mask - 1)), .interval(1...mask),
+            .interval((mask - 3)...mask),
+            .ranges([0...0, 3...5, mask...mask]), .ranges([1...3, 6...8]),
+            .unknown
+        ]
+
+        func verify(_ actual: Bucket, equals expected: Set<Int>) {
+            #expect(exactCounts(actual) == expected)
+            let ordered = expected.sorted()
+            let first = ordered.first!
+            let last = ordered.last!
+            switch actual {
+            case .single: #expect(ordered.count == 1)
+            case .interval: #expect(ordered.count > 1 && ordered.count < mask + 1 && ordered.count == last - first + 1)
+            case .ranges(let ranges):
+                #expect(ranges.count > 1)
+                #expect(zip(ranges, ranges.dropFirst()).allSatisfy { $0.upperBound + 1 < $1.lowerBound })
+            case .unknown: #expect(ordered.count == mask + 1)
+            }
+            let allHigh = ordered.reduce(mask, &)
+            let anyHigh = ordered.reduce(0, |)
+            #expect(actual.outputBits.high == allHigh)
+            #expect(actual.outputBits.ambiguous == allHigh ^ anyHigh)
+        }
+
+        let references = buckets.map(exactCounts)
+        for (index, original) in buckets.enumerated() {
+            let reference = references[index]
+            for falling in [false, true] {
+                for mayReset in [false, true] {
+                    var next = original
+                    next.transition(falling: falling, mayReset: mayReset)
+                    var expected = falling ? Set(reference.map { ($0 + 1) & mask }) : reference
+                    if mayReset { expected.insert(0) }
+                    verify(next, equals: expected)
+                }
+            }
+            for (other, expected) in zip(buckets, references) {
+                verify(original.union(other), equals: reference.union(expected))
+            }
+        }
+    }
+
+    @Test("CD4060 X/Z clock and reset histories match exact correlated buckets",
+          arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func exactClockHistory(automaticPower: Bool, uncertain: LogicState) throws {
+        let clock = WiredClock(automaticPower: automaticPower)
+        try clock.initialize()
+        let other: LogicState = uncertain == .undefined ? .highImpedance : .undefined
+        var history: [LogicState: Set<Int>] = [.low: [0]]
+        var previous = LogicState.low
+
+        func step(_ level: LogicState, reset: LogicState = .low, publish: Bool = false) throws {
+            let levels: [LogicState] = level == .low || level == .high ? [level] : [.low, .high]
+            var next: [LogicState: Set<Int>] = [:]
+            for (prior, counts) in history {
+                for current in levels where level != previous || publish || current == prior {
+                    for count in counts {
+                        if reset != .high {
+                            let advance = prior == .high && current == .low ? 1 : 0
+                            next[current, default: []].insert((count + advance) & 0x3FFF)
+                        }
+                        if reset != .low { next[current, default: []].insert(0) }
+                    }
+                }
+            }
+            clock.circuit.reset.receive(reset)
+            if publish {
+                clock.driver.publishClockDrive(level)
+                try clock.settle()
+            } else {
+                try clock.drive(level)
+            }
+            let chip = clock.circuit.chip
+            #expect(exactCounts(chip.candidates) == next[levels[0]])
+            if levels.count == 2 {
+                let high = try #require(chip.highCandidates)
+                #expect(exactCounts(high) == next[.high])
+            } else {
+                #expect(chip.highCandidates == nil)
+            }
+            clock.expectCounts(Array(next.values.reduce(into: Set<Int>()) { $0.formUnion($1) }))
+            history = next
+            previous = level
+        }
+
+        try clock.pulse(16_380)
+        history = [.low: [16_380]]
+        try step(.high)
+        try step(uncertain)
+        try step(uncertain)
+        try step(uncertain, reset: other)
+        try step(uncertain, publish: true)
+        try step(other)
+        try step(other, publish: true)
+        try step(.low)
+        try step(.high)
+        try step(.low)
+        try step(other, reset: .high)
+        try step(other)
+        try step(.low)
+        try step(.high)
+        try step(.low)
     }
 }

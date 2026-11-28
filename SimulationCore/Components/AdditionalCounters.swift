@@ -117,6 +117,10 @@ final class CD4516: PoweredChip {
     )
     private var counter = PresettableCounterState(maximum: 15)
 
+    init() {
+        pins[15]!.tracksClockProvenance = true
+    }
+
     func powerDidFail() {
         counter.powerDidFail()
     }
@@ -135,9 +139,11 @@ final class CD4029: PoweredChip {
             Array(zip(CD4029.jamPins, (1...4).map { "JAM \($0)" })),
         outputs: Array(zip(CD4029.outputPins, (1...4).map { "Q\($0)" })) + [(7, "CARRY OUT")]
     )
-    private static let allCounts = Set(0..<16)
-    private let clock = ClockEdgeDetector()
-    private var candidates = CD4029.allCounts
+    private static let allCounts = 0..<16
+    private var history = CorrelatedClockHistory(initialStates: CD4029.allCounts)
+    private var lastClock: LogicState?
+    private var lastDriveObservations: [ObjectIdentifier: ClockDriveObservation] = [:]
+    private var ordinal: UInt64 = 0
     private var lastInputs: Inputs?
     private var carry: LogicState = .undefined
 
@@ -149,14 +155,19 @@ final class CD4029: PoweredChip {
         let jam: [LogicState]
     }
 
+    init() {
+        pins[15]!.tracksClockProvenance = true
+    }
+
     func powerDidFail() {
-        candidates = Self.allCounts
+        history.invalidateClock(resetTo: Self.allCounts)
+        lastClock = nil
+        lastDriveObservations = [:]
         lastInputs = nil
-        clock.reset()
     }
 
     func evaluate() {
-        let rising = clock.update(pins[15]!.state) == .rising
+        let clock = pins[15]!
         let presetEnable = pins[1]!.state
         let inputs = Inputs(
             presetEnable: presetEnable,
@@ -165,68 +176,145 @@ final class CD4029: PoweredChip {
             direction: pins[10]!.state,
             jam: presetEnable == .low ? [] : Self.jamPins.map { pins[$0]!.state }
         )
-        // The engine resolves nets before evaluating components. All counters
-        // see the pre-edge carry on the first pass. Later passes may update CO
-        // from changed inputs, while the detector consumes the edge only once.
-        if rising || inputs != lastInputs {
-            update(inputs, rising: rising)
-            lastInputs = inputs
+        let controlsChanged = lastInputs != inputs
+        // The engine resolves inputs before evaluation, so common-clock
+        // counters sample settled pre-edge CI regardless of registration order.
+        if lastClock != clock.state || lastDriveObservations != clock.clockDriveObservations {
+            ordinal += 1
+            let sample = ResolvedClockSample(id: ClockSampleID(ordinal: ordinal), level: clock.state)
+            update(inputs, sample: sample, controlsChanged: controlsChanged)
+            lastClock = clock.state
+            lastDriveObservations = clock.clockDriveObservations
+        } else if controlsChanged {
+            update(inputs, sample: nil, controlsChanged: true)
         }
+        lastInputs = inputs
 
-        for (bit, number) in Self.outputPins.enumerated() {
-            let mask = 1 << bit
-            let hasLow = candidates.contains { $0 & mask == 0 }
-            let hasHigh = candidates.contains { $0 & mask != 0 }
-            pins[number]!.drive(PresettableCounterState.consensus(low: hasLow, high: hasHigh))
+        if let count = history.unanimousState {
+            for (bit, number) in Self.outputPins.enumerated() {
+                pins[number]!.drive(count & (1 << bit) == 0 ? .low : .high)
+            }
+        } else {
+            let candidates = history.possibleStates
+            for (bit, number) in Self.outputPins.enumerated() {
+                let mask = 1 << bit
+                let hasLow = candidates.contains { $0 & mask == 0 }
+                let hasHigh = candidates.contains { $0 & mask != 0 }
+                pins[number]!.drive(PresettableCounterState.consensus(low: hasLow, high: hasHigh))
+            }
         }
         pins[7]!.drive(carry)
     }
 
-    private func update(_ inputs: Inputs, rising: Bool) {
-        let preset: Set<Int> = inputs.jam.isEmpty ? [] : Self.allCounts.filter { value in
-            inputs.jam.enumerated().allSatisfy { bit, state in
-                let high = value & (1 << bit) != 0
-                return PresettableCounterState.possibilities(state).contains(high)
-            }
-        }
-
-        var next: Set<Int> = []
+    private func update(_ inputs: Inputs, sample: ResolvedClockSample?, controlsChanged: Bool) {
+        var sawRise = false
         var carryLow = false
         var carryHigh = false
-        for binary in PresettableCounterState.possibilities(inputs.binaryMode) {
-            let modulus = binary ? 16 : 10
-            for up in PresettableCounterState.possibilities(inputs.direction) {
-                let terminal = up ? modulus - 1 : 0
-                for inhibited in PresettableCounterState.possibilities(inputs.carryIn) {
-                    var branch = preset
-                    if inputs.presetEnable != .high {
-                        if rising && !inhibited {
-                            branch.formUnion(advancedCounts(modulus: modulus, up: up))
-                        } else {
-                            branch.formUnion(candidates)
+        func recordCarry(_ value: Int, modulus: Int, up: Bool, inhibited: Bool) {
+            let terminal = up ? modulus - 1 : 0
+            carryLow = carryLow || (!inhibited && (value >= modulus || value == terminal))
+            carryHigh = carryHigh || inhibited || value != terminal
+        }
+
+        let definiteJam = inputs.jam.allSatisfy { $0 == .low || $0 == .high }
+        if definiteJam && [inputs.presetEnable, inputs.carryIn, inputs.binaryMode, inputs.direction]
+            .allSatisfy({ $0 == .low || $0 == .high }) {
+            let modulus = inputs.binaryMode == .high ? 16 : 10
+            let up = inputs.direction == .high
+            let inhibited = inputs.carryIn == .high
+            var jam = 0
+            for (bit, level) in inputs.jam.enumerated() where level == .high { jam |= 1 << bit }
+
+            func advance(_ count: Int, _ event: ClockSampleTransition) -> CountSuccessors {
+                let rising = event == .rising
+                sawRise = sawRise || rising
+                let successors: CountSuccessors
+                if inputs.presetEnable == .high {
+                    successors = .one(jam)
+                } else if rising && !inhibited {
+                    successors = Self.advance(count, modulus: modulus, up: up)
+                } else {
+                    successors = .one(count)
+                }
+                for value in successors { recordCarry(value, modulus: modulus, up: up, inhibited: inhibited) }
+                return successors
+            }
+            apply(sample, transition: advance)
+        } else {
+            let preset: Set<Int> = inputs.jam.isEmpty ? [] : Set(Self.allCounts.filter { value in
+                inputs.jam.enumerated().allSatisfy { bit, state in
+                    let level: LogicState = value & (1 << bit) == 0 ? .low : .high
+                    return state == level || state == .undefined || state == .highImpedance
+                }
+            })
+            let modes = PresettableCounterState.possibilities(inputs.binaryMode)
+            let directions = PresettableCounterState.possibilities(inputs.direction)
+            let inhibits = PresettableCounterState.possibilities(inputs.carryIn)
+
+            func advance(_ count: Int, _ event: ClockSampleTransition) -> Set<Int> {
+                let rising = event == .rising
+                sawRise = sawRise || rising
+                var successors: Set<Int> = []
+                for binary in modes {
+                    let modulus = binary ? 16 : 10
+                    for up in directions {
+                        for inhibited in inhibits {
+                            var branch = preset
+                            if inputs.presetEnable != .high {
+                                if rising && !inhibited {
+                                    branch.formUnion(Self.advance(count, modulus: modulus, up: up))
+                                } else {
+                                    branch.insert(count)
+                                }
+                            }
+                            for value in branch {
+                                recordCarry(value, modulus: modulus, up: up, inhibited: inhibited)
+                            }
+                            successors.formUnion(branch)
                         }
                     }
-
-                    next.formUnion(branch)
-                    // Use the same mode, direction and CI for the transition
-                    // and the resulting carry. The merged states lose that
-                    // association, so keep this consensus until inputs change.
-                    let invalidDecade = branch.contains { $0 >= modulus }
-                    carryLow = carryLow || (!inhibited && (invalidDecade || branch.contains(terminal)))
-                    carryHigh = carryHigh || inhibited || branch.contains { $0 != terminal }
                 }
+                return successors
             }
+            apply(sample, transition: advance)
         }
-        candidates = next
-        carry = PresettableCounterState.consensus(low: carryLow, high: carryHigh)
+
+        // Keep carry computed from the same mode, direction and CI branches
+        // that produced these counts. A control change recomputes it.
+        if sawRise || controlsChanged {
+            carry = PresettableCounterState.consensus(low: carryLow, high: carryHigh)
+        }
     }
 
-    private func advancedCounts(modulus: Int, up: Bool) -> Set<Int> {
-        // Any enabled decade transition from an invalid BCD candidate has an
-        // unspecified result. Its full four-bit range subsumes other branches.
-        guard !candidates.contains(where: { $0 >= modulus }) else { return Self.allCounts }
+    private func apply<Successors: Sequence>(
+        _ sample: ResolvedClockSample?,
+        transition: (Int, ClockSampleTransition) -> Successors
+    ) where Successors.Element == Int {
+        if let sample {
+            history.consume(sample, applying: transition)
+        } else {
+            history.updateStates { transition($0, .hold) }
+        }
+    }
+
+    private enum CountSuccessors: Sequence {
+        case one(Int)
+        case all
+
+        func makeIterator() -> Range<Int>.Iterator {
+            switch self {
+            case .one(let count): (count..<(count + 1)).makeIterator()
+            case .all: CD4029.allCounts.makeIterator()
+            }
+        }
+    }
+
+    private static func advance(_ count: Int, modulus: Int, up: Bool) -> CountSuccessors {
+        // Preserve the full four-bit result for an enabled invalid decade
+        // transition, confined to the clock branch in which it happens.
+        guard count < modulus else { return .all }
         let step = up ? 1 : modulus - 1
-        return Set(candidates.map { ($0 + step) % modulus })
+        return .one((count + step) % modulus)
     }
 }
 

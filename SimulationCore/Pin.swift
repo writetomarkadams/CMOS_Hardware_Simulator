@@ -7,7 +7,26 @@ enum PinDirection {
     case noConnect
 }
 
+// The drivers visible at the winning resolution tier, or potential drivers
+// on a floating clock. An explicit publication distinguishes equal symbols.
+struct ClockDriveObservation: Equatable {
+    let level: LogicState
+    let publication: UInt64
+}
+
 final class Pin: Identifiable {
+    var tracksClockProvenance = false
+    var clockDriveObservations: [ObjectIdentifier: ClockDriveObservation] = [:]
+    private(set) var clockPublication: UInt64 = 0
+
+    /// Publish an independently identified source event before settling. This
+    /// distinguishes equal symbols at separate resolution boundaries. During
+    /// component evaluation, use drive() as usual.
+    func publishClockDrive(_ level: LogicState) {
+        drive(level)
+        clockPublication += 1
+    }
+
     let number: Int
     let name: String
     let direction: PinDirection
@@ -58,6 +77,7 @@ final class Pin: Identifiable {
     // Update the logic level observed at this pin.
     func receive(_ newState: LogicState, strongState: LogicState? = nil, supplyRail: SupplyRail? = nil, dcVoltage: Double? = nil) {
         state = newState
+        clockDriveObservations = [:]
         self.supplyRail = supplyRail
         self.dcVoltage = dcVoltage
         self.strongState = strongState ?? newState

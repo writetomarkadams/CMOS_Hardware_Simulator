@@ -156,8 +156,10 @@ struct CD4027UncertaintyTests {
                 c.expect(index, .undefined, .undefined)
                 try c.drive((unit.clock, .low))
                 try c.drive((unit.clock, unknown))
-                try c.drive((unit.clock, .high))
                 c.expect(index, .undefined, .undefined)
+                // Both possible rising boundaries sample the same reset row.
+                try c.drive((unit.clock, .high))
+                c.expect(index, .low, .high)
                 try c.drive((unit.clock, .low))
                 try c.drive((unit.clock, .high))
                 c.expect(index, .low, .high)
@@ -246,5 +248,142 @@ struct CD4027UncertaintyTests {
         try c.drive((13, .high))
         c.expect(0, .high, .low)
         c.expect(1, .high, .low)
+    }
+
+    @Test("CD4027 correlates bridges and returns independently on both clocks",
+          arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func correlatedClocks(automatic: Bool, unknown: LogicState) throws {
+        let c = Circuit(automatic: automatic)
+        try c.drive((4, .high), (12, .high), (5, .high), (6, .high), (10, .high), (11, .high))
+        try c.drive((4, .low), (12, .low))
+        try c.drive((3, unknown), (13, unknown))
+        c.expect(0, .undefined, .undefined)
+        c.expect(1, .undefined, .undefined)
+        for _ in 0..<3 { try c.settle() }
+        try c.drive((3, .high), (13, .low))
+        c.expect(0, .high, .low)
+        c.expect(1, .undefined, .undefined)
+
+        try c.drive((3, .low), (12, .high))
+        try c.drive((12, .low), (3, unknown))
+        try c.drive((3, .low), (13, .high))
+        c.expect(0, .undefined, .undefined)
+        c.expect(1, .high, .low)
+    }
+
+    @Test("CD4027 samples J and K at each clock boundary and honors asynchronous overrides",
+          arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func boundaryControls(automatic: Bool, unknown: LogicState) throws {
+        let c = Circuit(automatic: automatic)
+        try c.drive((4, .high), (9, .high))
+        try c.drive((4, .low), (9, .low), (3, unknown), (13, unknown), (6, .high), (11, .high))
+        c.expect(0, .undefined, .undefined)
+        c.expect(1, .undefined, .undefined)
+        // Change controls only. Each history must keep its previous clock.
+        try c.drive((6, .low), (11, .low))
+        try c.settle()
+        try c.drive((3, .high), (13, .high), (6, .high), (11, .high))
+        c.expect(0, .high, .low)
+        c.expect(1, .low, .high)
+
+        try c.drive((3, .low), (13, .low))
+        // The two possible rising boundaries now see different controls.
+        try c.drive((3, unknown), (13, unknown), (5, .high), (10, .high))
+        try c.drive((3, .high), (13, .high), (5, .low), (10, .low))
+        c.expect(0, .undefined, .undefined)
+        c.expect(1, .undefined, .undefined)
+
+        try c.drive((3, unknown), (13, unknown), (4, .high), (9, .high))
+        c.expect(0, .low, .high)
+        c.expect(1, .high, .low)
+        try c.drive((4, .low), (9, .low), (6, .high), (11, .high))
+        c.expect(0, .low, .high)
+        c.expect(1, .high, .low)
+        try c.drive((3, .high), (13, .high))
+        c.expect(0, .undefined, .undefined)
+        c.expect(1, .undefined, .undefined)
+    }
+
+    @Test("CD4027 distinguishes published same-symbol clock samples",
+          arguments: [false, true], [LogicState.undefined, .highImpedance])
+    func sameSymbolClock(automatic: Bool, unknown: LogicState) throws {
+        let c = Circuit(automatic: automatic)
+        try c.drive((4, .high), (12, .high), (5, .high), (6, .high), (10, .high), (11, .high))
+        try c.drive((4, .low), (12, .low))
+        try c.drive((3, unknown), (13, unknown))
+        c.drivers[3]!.publishClockDrive(unknown)
+        try c.settle()
+        // Activity on another net and an ordinary same-value drive leave the
+        // second receiver's original sample intact.
+        try c.drive((7, .low), (13, unknown), (11, .low))
+        try c.drive((11, .high))
+        try c.drive((3, .high), (13, .high))
+        c.expect(0, .undefined, .undefined)
+        c.expect(1, .high, .low)
+    }
+
+    @Test("CD4027 clock observes contention and resolved weak pulls", arguments: [false, true])
+    func resolvedClock(automatic: Bool) throws {
+        let c = Circuit(automatic: automatic)
+        let pull = Pin(number: 1, name: "Weak LOW", direction: .output, isWeakDriver: true)
+        let opposing = Pin(number: 2, name: "Strong LOW", direction: .output)
+        c.nets[3]!.connect(pull)
+        c.nets[3]!.connect(opposing)
+        pull.drive(.low)
+        try c.drive((3, .highImpedance), (4, .high), (5, .high), (6, .high))
+        #expect(c.chip.pins[3]!.state == .low)
+        try c.drive((4, .low))
+        opposing.drive(.low)
+        try c.drive((3, .high))
+        #expect(c.chip.pins[3]!.state == .undefined)
+        c.expect(0, .undefined, .undefined)
+        pull.publishClockDrive(.high)
+        try c.drive((10, .high))
+        opposing.drive(.highImpedance)
+        try c.settle()
+        c.expect(0, .high, .low)
+
+        pull.drive(.low)
+        try c.drive((3, .highImpedance))
+        #expect(c.chip.pins[3]!.state == .low)
+        opposing.drive(.low)
+        try c.drive((3, .high))
+        // Replace the opposing driver while the resolved value stays X.
+        let replacement = Pin(number: 3, name: "Replacement LOW", direction: .output)
+        c.nets[3]!.connect(replacement)
+        replacement.drive(.low)
+        opposing.drive(.highImpedance)
+        try c.settle()
+        #expect(c.chip.pins[3]!.state == .undefined)
+        replacement.drive(.highImpedance)
+        try c.settle()
+        c.expect(0, .undefined, .undefined)
+    }
+
+    @Test("CD4027 seeds history without a startup or restoration edge",
+          arguments: [false, true], [LogicState.low, .high, .undefined, .highImpedance])
+    func clockInitialization(automatic: Bool, initial: LogicState) throws {
+        let c = Circuit(automatic: automatic)
+        try c.drive((3, initial), (13, initial), (6, .high), (10, .high))
+        for half in 0..<2 { c.expect(half, .undefined, .undefined) }
+        try c.drive((3, .low), (13, .low))
+        try c.drive((3, .high), (13, .high))
+        for half in 0..<2 { c.expect(half, .high, .low) }
+
+        // With invalid rails, Explicit Power exposes the package power loss.
+        c.engine.automaticallyPowerChips = false
+        c.supply.drive(.highImpedance)
+        try c.drive((3, initial), (13, initial))
+        for half in 0..<2 { c.expect(half, .undefined, .undefined) }
+
+        c.engine.automaticallyPowerChips = automatic
+        if !automatic { c.supply.drive(.high) }
+        try c.settle()
+        for half in 0..<2 { c.expect(half, .undefined, .undefined) }
+        try c.settle()
+        for half in 0..<2 { c.expect(half, .undefined, .undefined) }
+        try c.drive((3, .low), (13, .low))
+        try c.drive((3, .high), (13, .high))
+        for half in 0..<2 { c.expect(half, .high, .low) }
     }
 }

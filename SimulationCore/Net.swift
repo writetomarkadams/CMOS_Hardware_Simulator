@@ -60,6 +60,25 @@ final class Net {
         for pin in pins {
             pin.receive(state, strongState: strongState, supplyRail: supply)
         }
+
+        guard state == .undefined || state == .highImpedance else { return }
+        let receivers = pins.filter(\.tracksClockProvenance)
+        guard !receivers.isEmpty else { return }
+        var drivers: [ObjectIdentifier: ClockDriveObservation] = [:]
+        for pin in pins {
+            if state == .highImpedance {
+                guard pin.direction == .output || pin.direction == .bidirectional ||
+                    pin.direction == .power else { continue }
+            } else {
+                guard pin.driveState != .highImpedance,
+                      pin.isWeakDriver == (strongState == .highImpedance) else { continue }
+            }
+            drivers[ObjectIdentifier(pin)] = ClockDriveObservation(level: pin.driveState,
+                                                                   publication: pin.clockPublication)
+        }
+        for receiver in receivers {
+            receiver.clockDriveObservations = drivers
+        }
     }
 
     private static func merged(_ current: LogicState, _ next: LogicState) -> LogicState {

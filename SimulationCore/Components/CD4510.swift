@@ -39,6 +39,7 @@ final class CD4510: LogicComponent {
             8: Pin(number: 8, name: "VSS", direction: .power),
             16: Pin(number: 16, name: "VDD", direction: .power)
         ]
+        pins[15]!.tracksClockProvenance = true
     }
     
     func powerDidFail() {

@@ -306,4 +306,166 @@ struct CD4029UncertaintyTests {
             }
         }
     }
+
+    @Test(arguments: uncertain, powerModes)
+    func correlatedClockBridgesAndReturns(unknown: LogicState, power: PowerMode) {
+        let f = Fixture(mode: power)
+        f.load(4)
+        f.drive(15, unknown)
+        f.settle()
+        #expect(f.q == "010X")
+        let unrelated = Pin(number: 1, name: "Unrelated", direction: .output)
+        Self.connect(unrelated, to: [], on: f.engine)
+        for level: LogicState in [.high, .low, .undefined] {
+            unrelated.drive(level)
+            f.settle()
+            f.settle()
+            #expect(f.q == "010X")
+        }
+        f.drive(15, .high)
+        f.settle()
+        #expect(f.q == "0101")
+
+        f.drive(15, .low)
+        f.load(4)
+        f.drive(15, unknown)
+        f.settle()
+        f.drive(15, .low)
+        f.settle()
+        #expect(f.q == "010X")
+        f.pulse()
+        #expect(f.q == "01XX") // {5, 6}, including the earlier possible pulse.
+    }
+
+    @Test(arguments: uncertain, powerModes)
+    func distinctSameSymbolClockEvents(unknown: LogicState, power: PowerMode) {
+        let f = Fixture(mode: power)
+        f.load(4)
+        let clock = f.inputs[15]!
+        clock.drive(unknown)
+        f.settle()
+        clock.drive(unknown)
+        f.settle()
+        #expect(f.q == "010X")
+        clock.publishClockDrive(unknown)
+        f.settle()
+        #expect(f.chip.pins[15]!.state == unknown)
+        #expect(f.q == "010X") // Two uncertain samples still allow at most one rise.
+        clock.drive(.high)
+        f.settle()
+        #expect(f.q == "01XX") // {5, 6}, since X/Z can now include HIGH then LOW.
+
+        clock.drive(.low)
+        f.load(4)
+        clock.drive(unknown)
+        f.settle()
+        let net = f.engine.nets.first { $0.pins.contains { $0 === clock } }!
+        let extra = Pin(number: 1, name: "Additional clock driver", direction: .output)
+        extra.drive(unknown)
+        net.connect(extra)
+        f.settle()
+        #expect(f.chip.pins[15]!.state == unknown)
+        extra.drive(.highImpedance)
+        clock.drive(.high)
+        f.settle()
+        #expect(f.q == "01XX") // A changed driver set also distinguishes X or Z.
+    }
+
+    @Test(arguments: uncertain, powerModes)
+    func controlsAtClockBoundaries(unknown: LogicState, power: PowerMode) {
+        let f = Fixture(mode: power)
+        f.load(9)
+        f.drive(9, .high)
+        f.drive(15, unknown)
+        f.settle()
+        f.drive(9, .low)
+        f.drive(15, .high)
+        f.settle()
+        #expect(f.q == "X0X0") // Early binary rise to 10, or late decade rise to 0.
+        #expect(f.carry == .undefined) // 10 is invalid under the new decade mode.
+
+        f.drive(15, .low)
+        f.load(4)
+        f.drive(5, .high)
+        f.drive(15, unknown)
+        f.settle()
+        f.drive(5, .low)
+        f.drive(10, .low)
+        f.drive(15, .high)
+        f.settle()
+        #expect(f.q == "0XXX") // Early rise inhibited, or late rise down to 3.
+
+        f.drive(15, .low)
+        f.load(4)
+        f.jam(8)
+        f.drive(1, .high)
+        f.drive(15, unknown)
+        f.settle()
+        #expect(f.q == "1000")
+        f.drive(1, .low)
+        f.drive(15, .high)
+        f.settle()
+        #expect(f.q == "XXXX") // JAM 8, or count down to 7 on the late rise.
+    }
+
+    @Test(arguments: powerModes)
+    func clockPullsAndContention(power: PowerMode) {
+        let f = Fixture(mode: power)
+        f.load(4)
+        let driver = f.inputs[15]!
+        let net = f.engine.nets.first { $0.pins.contains { $0 === driver } }!
+        let pull = Pin(number: 1, name: "Clock pull-up", direction: .output, isWeakDriver: true)
+        pull.drive(.high)
+        net.connect(pull)
+        let contender = Pin(number: 1, name: "Contending clock", direction: .output)
+        contender.drive(.high)
+        net.connect(contender)
+        f.settle()
+        #expect(f.chip.pins[15]!.state == .undefined)
+        #expect(f.q == "010X")
+        pull.drive(.low)
+        f.settle() // The change in the shadowed pull cannot resample X.
+        pull.drive(.high)
+        f.settle()
+        contender.drive(.highImpedance)
+        driver.drive(.highImpedance)
+        f.settle()
+        #expect(f.chip.pins[15]!.state == .high)
+        #expect(f.q == "0101")
+    }
+
+    @Test(arguments: [LogicState.low, .high, .undefined, .highImpedance], powerModes)
+    func clockAtStartupAndPowerRestoration(level: LogicState, power: PowerMode) {
+        let f = Fixture(mode: power)
+        f.drive(15, level)
+        f.load(4)
+        f.drive(15, .high)
+        f.settle()
+        let afterHigh: String
+        switch level {
+        case .low: afterHigh = "0101"
+        case .high: afterHigh = "0100"
+        case .undefined, .highImpedance: afterHigh = "010X"
+        }
+        #expect(f.q == afterHigh)
+
+        f.supply.pins[1]!.drive(.low)
+        f.settle()
+        #expect(f.q == (power == .explicit ? "XXXX" : afterHigh))
+        f.drive(15, level)
+        f.drive(1, .high)
+        f.jam(4)
+        f.settle()
+        f.supply.pins[1]!.drive(.high)
+        f.settle()
+        #expect(f.q == "0100")
+        f.drive(1, .low)
+        f.settle()
+        f.drive(15, .high)
+        f.settle()
+        #expect(f.q == afterHigh)
+        f.load(4)
+        f.pulse()
+        #expect(f.q == "0101")
+    }
 }

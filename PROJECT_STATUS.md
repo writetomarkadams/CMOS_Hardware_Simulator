@@ -1175,3 +1175,1013 @@ struct Phase4GBenchmarkRunner {
   Recommended checkpoint is the verified Phase 4G working tree.
   Review and preserve that checkpoint before moving to Phase 5
   uncertain clock transitions or switching Macs.
+
+## Phase 5B.1 clock history foundation on 28 November 2026
+
+### Sample identity and receiver history
+
+- `SimulationCore/CorrelatedClockHistory.swift` defines a resolved receiver
+  sample with a non-wrapping, strictly increasing ordinal scoped to one
+  clock stream. The producer assigns a new ID for a causally relevant
+  resolved receiver update, even if the symbol stays X or Z. A derived
+  update can have its own ID at the same simulated time. Settling the same
+  event reuses its ID and level. Unrelated activity produces no new clock
+  sample. Repeated and stale deliveries skip the boundary callback.
+- Startup and explicit history invalidation are uninitialized. A fresh first
+  sample establishes binary history without an edge, including when it
+  admits both LOW and HIGH. Invalidation uses a caller-supplied device
+  state and retains the last consumed ID so the old event cannot initialize
+  restored history. A live X or Z admits both binary levels and can produce
+  a hold, rise or fall according to the preceding binary level.
+- Each candidate carries its previous binary clock level and its device
+  state. The boundary callback uses the controls captured for that sample
+  and can return alternative device states. LOW→X/Z→HIGH admits one modeled
+  rise and HIGH→X/Z→LOW one modeled fall under uninterrupted enabled
+  sampling. A return to the origin can preserve both the hold history and
+  the pulse history. These counts describe the sampled digital model.
+- Equivalent state/level pairs merge on each sample. For a finite domain
+  of N device states there are at most 2N live pairs after initialization.
+  The caller owns that finite domain. A single candidate uses inline
+  storage and requires no candidate set on a definite, single-successor
+  transition.
+
+### Native verification
+
+- The canonical WORK Mac checkout was clean at
+  `06bb45b8657a7b113e19732f74874bf67b5507fb` before edits. Local main, cached
+  origin/main and live GitHub main matched. The Xcode 27.2 (27B52) native
+  arm64 Debug baseline passed 262 tests in 50 suites and 435 executions,
+  with zero failures or skips.
+- Phase 5B.1 passed the native arm64 Debug app build and full suite.
+  The updated suite passed 269 tests in 51 suites and 463 executions,
+  with zero failures or skips. Xcode result IDs confirmed retention of
+  all 262 baseline tests, 50 suites and 251 parameterized executions.
+  The new suite adds seven tests and 28 executions, 24 parameterized.
+  Xcode emitted the existing App Intents metadata warning.
+- The focused suite covers all 16 resolved transitions, X and Z bridge and
+  return histories in both directions, mixed and repeated symbols,
+  caller-supplied sample boundaries, stale delivery, control snapshots,
+  override precedence, invalidation, bounded merging and the singleton
+  path. A fixture feeds resolved receiver observations from the existing
+  net resolver with strong contention, a weak pull and undriven Z.
+
+### Integration limits and next migration
+
+- The producer contract is exercised with fixture-supplied IDs. Production
+  engine event generation, control-only updates, shared-net correlation
+  across devices, and derived-event ordering are deferred. The existing
+  ClockEdgeDetector, chip models, scheduler batching and convergence code
+  retain their current behavior.
+- Proposed Phase 5B.2 starts with CD4510 and CD4516. Define where the engine
+  emits receiver sample IDs and snapshots pre-edge carry and control inputs.
+  Preserve asynchronous reset/preset priority and invalidate on power loss,
+  then verify wired common-clock carry and uncertain-clock histories in
+  both power modes and registration orders.
+
+## Phase 5B.2 CD4510 and CD4516 on 28 November 2026
+
+### Receiver behavior and supported provenance
+
+- CD4510 and CD4516 now retain each possible count with its previous binary
+  clock level in `CorrelatedClockHistory`. Equivalent pairs merge, so there
+  are at most 20 pairs for CD4510 and 32 for CD4516. Definite controls and a
+  single count/clock pair use the single-successor path without a candidate
+  set. The receiver's increasing sample ordinal survives explicit power
+  failure. Startup and the first powered observation after failure establish
+  binary history without an edge, and the history rejects consumed and
+  stale ordinals.
+- Supported clock observations are the level at pin 15 when the receiver
+  evaluates, and digital driver provenance when that level is X or Z.
+  A different driver or drive at the winning tier can distinguish X from a
+  previous X. A floating Z records the connected drive-capable pins, so a
+  change in those connections can distinguish Z from a previous Z. An
+  external source with an independently identified event can call
+  `Pin.publishClockDrive` and settle at that boundary to distinguish
+  consecutive X or Z deliveries from the same driver. Ordinary sources
+  continue to use `drive`. Stable observations, shadowed weak drivers under
+  a strong drive, and unrelated nets leave the receiver sample unchanged.
+  Provenance compares driver identities and values independently of pin
+  traversal order.
+- Control-only changes update asynchronous state and carry while retaining
+  each branch's previous binary clock. RESET takes priority over PE.
+  CD4510 retains the existing hold policy for each invalid BCD preset
+  completion. Carry consensus is computed from the same control branch
+  that generated each count. On a directly shared clock with settled
+  controls, both receivers use pre-edge carry from the current resolved pass.
+  [TI CD4510B/CD4516B, SCHS071B, July 2003](https://www.ti.com/lit/ds/symlink/cd4510b.pdf)
+
+### Event limits
+
+- The receiver observes the final inputs for each evaluation pass. Multiple
+  source mutations before the same resolution boundary are observed together.
+  An ordinary repeated `drive(X)` or `drive(Z)` carries no event marker.
+  Same-symbol changes hidden by an upstream model's unchanged output
+  consensus, same-symbol analog/DC changes, and changes inside passive
+  topology with identical relevant driver observations have no independent
+  receiver provenance. The DC path contributes resolved level changes.
+- Independently tracking a shared uncertain clock in two receivers does not
+  correlate their choices across chips or with uncertain carry. The common
+  clock guarantee above is for definite shared-clock edges with settled
+  controls. Existing pass order governs derived clock/control arrival.
+  Scheduler ordering, convergence, and the other chip models remain on
+  their existing paths.
+
+### Native verification
+
+- On the canonical WORK Mac checkout at
+  `06bb45b8657a7b113e19732f74874bf67b5507fb` with the local Phase 5B.1
+  changes present, Xcode 27.2 (27B52) reproduced **269 tests in 51 suites,
+  463 executions, zero failures and zero skips** in native arm64 Debug.
+- The Phase 5B.2 native arm64 Debug app build and full suite passed
+  **275 tests in 51 suites, 491 executions, zero failures and zero skips**.
+  Comparing Xcode result identities confirmed retention of all 269 baseline
+  tests, all 51 suite identities and all 275 parameterized executions. Six
+  new tests add 28 parameterized executions.
+- Wired fixtures cover X/Z bridges and returns, mixed and distinct
+  same-symbol samples, repeated settling, separate-net activity and masked
+  weak pulls, controls at both sample boundaries, asynchronous override
+  and release, contention, LOW/HIGH/X/Z startup and restoration, and up/down
+  decimal and binary common-clock cascades in both registration orders.
+  Both Automatic and Explicit Power are exercised. The Phase 5B.1
+  stale-delivery regression remains in the full suite.
+
+## Phase 5B.3 CD4029 on 28 November 2026
+
+### Clock history and device behavior
+
+- CD4029 now uses the production pin-15 clock provenance and
+  `CorrelatedClockHistory` used by CD4510 and CD4516. Each candidate pairs a
+  four-bit count with its preceding binary clock level. Equivalent pairs
+  merge, bounding the initialized history at 32 pairs. A definite clock
+  with one count and a valid single successor uses inline history storage.
+  The first powered sample, including X or Z, seeds the clock history
+  without an edge. Explicit power loss invalidates the count and clock
+  history while retaining the monotonically increasing receiver ordinal.
+- With continuously enabled counting, LOW → X/Z → HIGH gives one rising
+  edge. LOW → X/Z → LOW retains the possible hold and pulse paths. At each
+  sample CD4029 uses the resolved controls for that boundary. A control-only
+  update applies asynchronous JAM and updates carry with the existing clock
+  histories. Repeated settling and unrelated activity do not consume a
+  clock sample. A changed driver at the winning tier, a changed potential
+  driver on a floating net, or an explicit `Pin.publishClockDrive` can
+  distinguish consecutive samples with the same X or Z symbol.
+- The ideal digital model retains the TI CD4029BE PDIP-16 pinout, the
+  asynchronous active-HIGH PE/JAM behavior, binary and decade up/down
+  counting, and active-LOW CI and CO. Each successor contributes carry
+  using its own mode, direction and CI. Common-clock stages on a definite
+  edge use pre-edge carry with settled controls in either registration order.
+  The existing non-BCD decade policy still accepts any JAM value. An
+  enabled transition from 10 through 15 admits all 16 results in that
+  clock branch. A held invalid decade count preserves its Q bits and gives
+  X for CO when CI is LOW.
+  [TI CD4029B datasheet, SCHS034C, p. 1 and Fig. 17](https://www.ti.com/lit/ds/symlink/cd4029b.pdf)
+
+### Native verification
+
+- On the canonical WORK Mac checkout at
+  `06bb45b8657a7b113e19732f74874bf67b5507fb`, with local Phases 5B.1–5B.2
+  present, Xcode 27.2 (27B52) reproduced **275 tests in 51 suites,
+  491 executions, zero failures and zero skips**.
+- The Phase 5B.3 native arm64 Debug app build and full suite passed
+  **280 tests in 51 suites, 513 executions, zero failures and zero skips**.
+  Xcode result identities match all 275 baseline tests, all 51 baseline
+  suites and all 303 baseline parameterized executions. Five new CD4029
+  tests add 22 parameterized executions. Xcode emitted the existing App
+  Intents metadata warning.
+- New wired fixtures cover X/Z bridges and returns, published and
+  driver-set same-symbol samples, repeated settle, unrelated activity,
+  control changes at both clock boundaries, clock contention and weak
+  pulls, and startup and restoration at LOW/HIGH/X/Z in both power modes.
+  Retained CD4029 fixtures cover ambiguous mode, direction, CI, PE and JAM,
+  invalid decade transitions, and definite binary and decade rollover and
+  up/down cascades in both power modes and registration orders. Fixtures
+  compare exact Q/CO logic states with ideal +5 V/GND or Automatic Power.
+
+### Model limits
+
+- Each receiver tracks its own uncertain clock histories. Choices on a
+  shared uncertain clock and uncertain carry between chips remain
+  independently evaluated. The simulator samples one resolved observation
+  per evaluation pass, so source changes batched before resolution can
+  collapse into a single sample. Repeated ordinary `drive` calls with the
+  same symbol carry no event marker. Same-symbol analog/DC changes and
+  provenance hidden by upstream output consensus remain unobservable.
+- The existing scheduler determines when derived clocks and controls
+  arrive. The model covers digital logic levels and sampled edges.
+  Datasheet propagation delays, setup and hold times, and analog
+  metastability are outside the model.
+
+## Phase 5B.4 CD4027 on 28 November 2026
+
+### Clock history and device behavior
+
+- Each half uses production clock provenance on pin 3 or 13 and owns its
+  own `CorrelatedClockHistory`. Each candidate pairs one of the three
+  valid Q/Q̅ pairs (0,1), (1,0), or (1,1) with the preceding binary clock
+  level. Equivalent histories merge, bounding each initialized half at
+  six candidates. Definite operation with a single candidate and known
+  controls uses inline history storage and single-successor transitions.
+- With J and K HIGH, LOW → X/Z → HIGH toggles once. LOW → X/Z → LOW
+  retains the hold and toggle alternatives. Each possible rising edge
+  samples the J/K levels at that boundary. Asynchronous SET and RESET
+  override clocked behavior, and simultaneous assertion drives both
+  outputs HIGH. A possible simultaneous release admits both normal
+  output pairs while retaining the clock levels. Control-only changes
+  do not replay a clock sample.
+- The first powered observation seeds the history without an edge at
+  LOW, HIGH, X, or Z. Explicit power loss invalidates both halves and
+  clears their sampled clock levels. Automatic Power continues to ignore
+  missing rails. The ideal digital model retains the TI CD4027BE PDIP-16
+  pinout and active-HIGH controls.
+  [TI CD4027B datasheet, SCHS032D, Figure 5-1, Table 5-1 and §8.2](https://www.ti.com/lit/ds/symlink/cd4027b.pdf)
+
+### Native verification
+
+- Xcode 27.2 (27B52) reproduced **280 tests in 51 suites, 513 executions,
+  zero failures and zero skips** on the canonical WORK Mac checkout at
+  `06bb45b8657a7b113e19732f74874bf67b5507fb` with local Phases 5B.1–5B.3.
+- The native arm64 Debug build and full suite passed **285 tests in
+  51 suites, 535 executions, zero failures and zero skips**. Xcode
+  result identities retain all 280 baseline tests, 51 suites, and 325
+  parameterized executions. Five new tests add 22 parameterized
+  executions. The existing App Intents metadata warning remains.
+- Wired tests cover both halves, both power modes, boundary changes of
+  J/K, asynchronous override and release, X/Z bridges and returns,
+  repeated settling, unrelated activity, same-symbol event publication
+  and driver replacement, contention, weak pulls, and startup and
+  restoration across all four clock symbols. Logic checks use exact
+  Q/Q̅ states with ideal +5 V/GND or Automatic Power. One existing test
+  now expects a definite reset after its LOW → X/Z → HIGH sequence,
+  since J LOW and K HIGH select reset at either possible rising boundary.
+- The deterministic 32,768 Hz CD4060-to-CD4027 1 Hz timebase and the
+  minutes/hours toggle fixture passed.
+
+### Model limits
+
+- Clock choices are local to each receiver, including both halves on a
+  shared uncertain clock. Each pass samples the resolved observation,
+  so source changes batched before resolution can collapse into one
+  sample. Ordinary repeated same-symbol drives, same-symbol analog/DC
+  changes, and events masked by upstream output consensus are invisible.
+  The existing scheduler determines clock and control arrival.
+- This is an ideal digital model. Propagation delays, setup and hold
+  times, and analog metastability are outside its scope.
+
+## Phase 5B.5 CD4060 performance gate on 28 November 2026
+
+### Baseline
+
+- Xcode 27.2 (27B52) reproduced **285 tests in 51 suites, 535 executions,
+  zero failures and zero skips** in native arm64 Debug on the canonical
+  WORK Mac checkout with local Phases 5B.1–5B.4 present. Xcode result
+  identities matched all 285 tests, 51 suites and 347 parameterized
+  executions from Phase 5B.4.
+- The baseline passed the test of all ten exposed divider outputs through
+  the complete 14-bit cycle and into the next in both power modes. It
+  also passed the deterministic 32,768 Hz → 2 Hz → 1 Hz transition fixture.
+  TI specifies the 14 stages, falling-edge advance, and active-HIGH
+  reset for the CD4060BE PDIP-16.
+  [TI CD4060B datasheet, SCHS049C, p. 1](https://www.ti.com/lit/ds/symlink/cd4060b.pdf)
+
+### Matched Debug benchmark
+
+The benchmark used the same native arm64 Debug test fixture on the WORK
+Mac before and after applying the candidate, with parallel tests disabled.
+Each workload used one warm-up and five measured trials. Wall times are
+monotonic milliseconds as median [minimum–maximum], excluding fixture
+creation and initial reset.
+
+| Workload | Phase 5B.4 baseline (ms) | Migration candidate (ms) | Median change |
+| --- | ---: | ---: | ---: |
+| Isolated definite | 375.29 [367.18–378.20] | 413.24 [411.99–415.57] | +10.1% |
+| Isolated partial RESET | 548.05 [547.16–562.41] | 588.27 [581.91–596.90] | +7.3% |
+| Isolated partial clock | 383.78 [379.43–384.54] | 548.22 [545.18–549.01] | +42.8% |
+| Isolated fully unknown count | 352.87 [350.13–355.76] | 391.32 [388.37–397.77] | +10.9% |
+| Wired CD4060 → CD4027 | 1,686.32 [1,675.58–1,701.12] | 1,734.98 [1,713.35–1,744.60] | +2.9% |
+
+The isolated workloads use 262,144 cycles with two evaluations per cycle.
+Definite and fully unknown use HIGH/LOW with RESET LOW, starting from
+zero or a fresh unknown count, respectively. Partial workloads repeat
+256-cycle blocks with RESET HIGH on cycle 0. On cycles 8–23, partial
+RESET drives RESET X, and partial clock substitutes X for HIGH.
+The partial-clock comparison includes new work because the candidate
+preserves separate LOW/HIGH histories where the baseline drops
+ambiguous edges. The wired Explicit Power fixture services one
+simulated second (65,536 half-period events) from a fixed virtual time
+source and checks the endpoint states. This measures host Debug
+throughput. It leaves Release throughput and physical timing unmeasured.
+
+### Status and limits
+
+- Phase 5B.5 stopped at the performance gate. The candidate stored
+  exact ranges in up to two clock-level buckets with a scalar singleton
+  path and a full-domain sentinel. It required no shared engine changes
+  or per-count candidate objects. The candidate compiled and ran the
+  benchmark. Its new correctness cases and final full regression suite
+  were withheld at the stop, so the candidate is unverified.
+- The benchmark harness was removed and the pre-migration CD4060 source
+  restored byte for byte on the canonical checkout. The verified
+  Phase 5B.4 local changes are preserved. CD4060 therefore still uses its
+  previous ambiguous-clock policy. Oscillator analog behavior, ripple
+  timing, and cross-receiver uncertainty remain outside this work.
+
+
+## Phase 5B.5a CD4060 profiling on 28 November 2026
+
+### Recovery and verification
+
+- Recovered the exact CD4060 source and benchmark harness from the preceding
+  performance-gate workspace. The gate run copied those files into the
+  checkout and verified both against the saved files before restoration.
+  The saved pre-migration source matches the canonical CD4060 byte for byte.
+  This run used two isolated snapshots of the canonical WORK Mac checkout at
+  `06bb45b8657a7b113e19732f74874bf67b5507fb`, including local Phases
+  5B.1–5B.4. The benchmark trees differ in CD4060.swift alone.
+- Xcode 27.2 (27B52) passed the native arm64 Debug baseline build and full
+  suite with **285 tests in 51 suites, 535 executions, zero failures and
+  zero skips**. All 285 test identities, 51 suite identities and 347
+  parameterized executions match the prior gate baseline. Both power modes
+  passed the ten divider ratios and 14-bit rollover. The deterministic
+  32,768 Hz to 1 Hz integration test passed.
+- The candidate was used for profiling and its benchmark assertions passed.
+  Its migration correctness suite and full regression suite remain pending.
+
+### Matched timing
+
+On the same WORK Mac, the recovered harness ran serially with one warm-up
+and five measured trials per workload and variant. Monotonic wall times are
+in milliseconds as median [minimum–maximum]. Fixture setup and initial
+reset are outside the timer. Debug uses `-Onone`. Release uses whole-module
+`-O` and `ENABLE_TESTABILITY=YES`. The benchmark ran natively on arm64 in
+both configurations.
+
+The direct-pin fixtures run 262,144 cycles and two evaluations per cycle.
+The partial-clock fixture substitutes X for HIGH on cycles 8–23 of each
+256-cycle block and resets at block boundaries. It exercises additional
+correlated histories in the candidate. The wired Explicit Power fixture
+services 65,536 half-period events in one virtual second through the
+production Workbench and checks the divider and flip-flop endpoints.
+
+| Build | Workload | Baseline (ms) | Candidate (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 407.32 [405.85–410.19] | 438.38 [436.26–467.02] | +7.6% |
+| Debug | partial-reset | 580.50 [579.46–583.80] | 613.88 [610.50–624.32] | +5.8% |
+| Debug | partial-clock | 414.27 [409.70–416.66] | 573.04 [572.18–575.40] | +38.3% |
+| Debug | unknown | 383.46 [378.71–384.32] | 419.01 [415.93–422.92] | +9.3% |
+| Debug | wired | 1,750.87 [1,742.56–1,769.81] | 1,769.97 [1,759.62–1,775.67] | +1.1% |
+| Release | definite | 73.41 [73.31–99.95] | 67.61 [67.58–81.90] | -7.9% |
+| Release | partial-reset | 80.07 [78.88–81.00] | 81.25 [81.12–82.53] | +1.5% |
+| Release | partial-clock | 70.73 [70.61–71.36] | 82.55 [81.49–83.27] | +16.7% |
+| Release | unknown | 66.70 [66.52–66.91] | 66.73 [66.51–67.31] | +0.1% |
+| Release | wired | 269.22 [260.29–273.89] | 268.83 [265.05–273.37] | -0.1% |
+
+The isolated definite-clock Debug median was 7.6% slower, above the
+advisory 5% target. The optimized median was 7.9% faster. The two Release
+definite-clock ranges overlap because both builds had a slower fifth
+trial. The wired ranges overlap in both configurations. These are
+single-host, baseline-first runs and do not establish a minimum speedup
+or a hard acceptance gate.
+
+### Hotspots and attribution
+
+- **Definite clock and output writes.** Native macOS `sample` collected
+  roughly 3,000 steady-state main-thread samples per isolated workload.
+  In Debug, stacks through the divider pin dictionary lookup and drive
+  line accounted for 1,317/3,038 samples in the baseline and
+  1,365/3,045 in the candidate. This is the largest clearly mapped
+  common cost. The candidate also checks the clock symbol and optional
+  second bucket and calls its reset/transition helper. In the definite
+  fixture, each variant retained one scalar count. The
+  samples do not apportion the 31 ms Debug median gap to individual
+  scalar operations.
+- **Provenance and identity.** The recovered candidate compares the
+  last symbol and visible driver observations for X/Z. It has no
+  separate sample-ordinal allocation path. On LOW/HIGH, the production
+  net resolver returns before collecting driver observations, and the
+  candidate skips observation dictionary comparison. In the isolated
+  partial-clock workload each X is separated by LOW, so the symbol
+  comparison short-circuits the dictionary equality and direct pin
+  receives supply no driver observations. Same-symbol published samples,
+  driver replacement and contentious nets are outside the timed fixtures.
+- **Range and allocation work.** A separate instrumented isolated pass
+  counted zero range merges, range buffer constructions, or range
+  consensus scans in both definite variants and in the baseline
+  partial-clock workload. Candidate partial clock entered 16,384
+  unions, built 16,384 merge buffers and 252,928 range-advance buffers,
+  materialized 2,048 singleton interval arrays, and scanned ranges for
+  consensus 522,240 times across both buckets. It combined two buckets
+  for consensus 16,384 times. Debug sampling found 436/2,986 candidate
+  partial-clock samples under range transitions, 323/2,986 under
+  output consensus and 20/2,986 under union. Array reserve and allocator
+  frames appeared under range processing. Branch counts identify buffer
+  construction sites. They are separate from heap allocation counts
+  and from the uninstrumented wall times.
+  Optimized partial clock still showed 491/3,069 samples under
+  transitions and 48/3,069 under union. One steady-state range-advance
+  stack alone contained 138 samples under Swift object allocation,
+  with additional range buffer disposal and reference-counting frames.
+  Optimized inlining limits output-consensus attribution.
+- **Wired timebase.** Native samples attached to the actual workbench
+  test process during the wired workload in both builds. Settling
+  appeared in 2,451/2,547 baseline and 2,382/2,464 candidate Debug
+  workload stacks, and in 472/504 and 530/563 Release stacks. Net
+  resolution and timing configuration were prominent in Debug.
+  CD4060 evaluation appeared in roughly 2–4% of wired workload
+  stacks. Sampling and the overlapping timing ranges offer limited
+  precision for the small wired median differences.
+
+The isolated stacks came from a standalone native runner using the
+recovered CD4060 and production Pin code with the same direct-pin clock
+patterns. The wired stacks came from separate Xcode test invocations.
+Sampling estimates inclusive activity and optimized frames may be
+inlined. The full benchmark timings ran without sampling or counters.
+
+### Ranked optimization proposals
+
+1. Benchmark a definite-clock singleton path that handles known RESET
+   and the previous binary level together before entering the two-bucket
+   path. Keep power/startup invalidation, asynchronous reset, and X/Z
+   observation identity intact. The Debug delta warrants this experiment.
+   The optimized measurement provides little urgency for changing this path.
+2. Cache each divider output pin and its precomputed bit mask at chip
+   construction. Drive the same ten pins on every evaluation. This targets
+   the largest common local cost in both builds while preserving output
+   consensus and net settling.
+3. Store a single contiguous count interval inline and advance it with
+   scalar bounds, splitting explicitly at wrap. Merge scalar/inline
+   intervals directly and retain sorted disjoint ranges for fragmented
+   histories. Preserve the full-domain sentinel. This targets the
+   observed range-advance allocations first and the smaller union cost
+   second. Measure exact output-consensus caching only if scans remain
+   expensive after the representation change.
+
+Phase 5B.5a ends with profiling. The canonical CD4060 implementation and
+all Phase 5B.4 files remain byte-identical to the starting snapshot.
+
+
+## Phase 5B.5b.1 CD4060 output pin and bit-mask caching on 28 November 2026
+
+The native arm64 WORK Mac runs used Xcode 27.2 (27B52) and isolated
+snapshots of canonical HEAD `06bb45b8657a7b113e19732f74874bf67b5507fb`
+with the local Phase 5B.1–5B.4 changes. The comparison source, migration
+tests and timing fixture came from the original Phase 5B.5 gate workspace.
+The source and timing fixture match the Phase 5B.5a recovery byte for byte.
+The comparison CD4060 source SHA-256 is
+`d9017692c9304edb0c234da97f4f84ab65e1158422fdb55d2b13a198aabcacc2`.
+
+The only candidate source change creates a fixed list of the ten divider
+output references and their bit masks during chip construction. Each list
+entry holds the exact `Pin` instance installed at its physical number in
+`pins`. Evaluation still makes all ten drive calls in the construction
+iteration order and applies the same consensus expression. Clock history,
+reset, power invalidation and startup code are byte-identical between
+the two candidates.
+
+### Native Debug correctness and regression
+
+| Snapshot | Tests | Suites | Executions | Failures / skips |
+| --- | ---: | ---: | ---: | ---: |
+| Canonical Phase 5B.4 | 285 | 51 | 535 | 0 / 0 |
+| Recovered candidate, focused CD4060 | 10 | 1 | 32 | 0 / 0 |
+| Cached candidate, focused CD4060 | 10 | 1 | 32 | 0 / 0 |
+| Recovered candidate, full regression | 289 | 51 | 553 | 0 / 0 |
+| Cached candidate, full regression | 289 | 51 | 553 | 0 / 0 |
+
+Xcode result identities for Phase 5B.4 match the preceding baseline
+across all tests, suites and 347 parameterized executions. Both candidate
+regressions retain all baseline identities and match one another,
+including all 365 parameterized executions. The 18 added executions are
+from `CD4060PowerTests.correlatedClock(automaticPower:unknown:)`,
+`sameSymbolAndReset(automaticPower:unknown:)`,
+`resolvedClock(automaticPower:)` and
+`startupAndRestore(automaticPower:initial:)`. The focused suite also
+passed `dividerRatios(automaticPower:)`, `candidateRollover()`,
+`powerLoss(restoredClock:fault:)`, `uncertainReset(resetLevel:automaticPower:)`,
+`resolvedReset(automaticPower:)` and `timebase()`. This covers all ten
+physical divider outputs and 14-bit rollover, reset consensus, repeated
+settling, explicit and automatic power, X/Z clock history, contention,
+weak pulls and the deterministic 32,768 Hz to 1 Hz timebase. The existing
+`uncertainReset` identity includes the recovered migration expectation
+for a HIGH → X/Z → LOW bridge.
+
+
+### Native arm64 matched benchmarks
+
+Both variants ran the recovered Xcode fixture serially, with
+`ENABLE_TESTABILITY=YES`, Debug `-Onone` and Release whole-module `-O`.
+Each variant used one warm-up and five measured trials per workload, with
+fixture creation and initial reset outside the timer. The unmodified
+candidate ran first in Debug and the cached candidate ran first in Release.
+Times are monotonic wall milliseconds, shown as median [minimum–maximum].
+Negative changes indicate lower elapsed time.
+
+The four direct-pin workloads each run 262,144 cycles and two evaluations
+per cycle. The wired Explicit Power workload runs 65,536 half-period
+events through Workbench in one virtual second and checks the CD4060 and
+CD4027 endpoints. The harness assertions passed for both variants.
+
+#### First pass
+
+| Build | Workload | Unmodified (ms) | Cached (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 407.73 [405.05–416.34] | 429.01 [419.69–431.86] | +5.2% |
+| Debug | partial-reset | 604.24 [598.90–608.26] | 628.49 [619.52–663.45] | +4.0% |
+| Debug | partial-clock | 564.10 [554.34–569.06] | 571.13 [568.68–574.14] | +1.2% |
+| Debug | unknown | 391.61 [390.74–393.63] | 398.34 [393.77–400.44] | +1.7% |
+| Debug | wired | 1,776.01 [1,747.21–1,802.07] | 1,779.31 [1,754.87–1,822.35] | +0.2% |
+| Release | definite | 68.97 [68.31–88.77] | 36.75 [36.66–37.23] | -46.7% |
+| Release | partial-reset | 83.04 [81.92–83.76] | 48.74 [48.30–70.10] | -41.3% |
+| Release | partial-clock | 84.26 [83.68–84.73] | 50.33 [49.95–51.24] | -40.3% |
+| Release | unknown | 68.67 [67.84–68.68] | 36.77 [36.62–37.10] | -46.4% |
+| Release | wired | 269.46 [268.94–271.91] | 281.24 [278.60–284.84] | +4.4% |
+
+#### Reverse-order repeat
+
+The repeat reused the built binaries, with the cached candidate first in
+Debug and the unmodified candidate first in Release. Each run again used
+one warm-up and five measured trials per workload.
+
+| Build | Workload | Unmodified (ms) | Cached (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 400.08 [399.11–403.29] | 423.27 [404.32–427.93] | +5.8% |
+| Debug | partial-reset | 583.52 [580.18–586.05] | 601.60 [595.72–603.49] | +3.1% |
+| Debug | partial-clock | 531.72 [529.28–548.19] | 564.38 [554.86–575.39] | +6.1% |
+| Debug | unknown | 381.98 [379.94–385.11] | 401.61 [399.96–405.51] | +5.1% |
+| Debug | wired | 1,762.14 [1,740.23–1,772.85] | 1,760.98 [1,755.63–1,781.66] | -0.1% |
+| Release | definite | 68.35 [67.50–83.53] | 35.85 [35.76–35.94] | -47.5% |
+| Release | partial-reset | 80.82 [80.02–82.31] | 48.13 [47.10–62.36] | -40.4% |
+| Release | partial-clock | 82.30 [81.98–82.88] | 48.95 [48.89–49.07] | -40.5% |
+| Release | unknown | 67.33 [66.57–67.85] | 36.21 [35.94–36.63] | -46.2% |
+| Release | wired | 273.85 [272.41–277.67] | 262.27 [260.56–264.40] | -4.2% |
+
+### Retention decision and limits
+
+Recommend retaining caching in the isolated Phase 5B.5 candidate for
+review. All four isolated Release workloads were 40.3–47.5% faster by
+median across the two passes, and their measured ranges were disjoint
+within each comparison. The four isolated Debug medians were 1.2–6.1%
+slower across the passes, including 5.2–5.8% for definite clock. Debug
+wired medians stayed within 0.2% and the ranges overlapped. Release wired
+changed from 4.4% slower to 4.2% faster when the order was reversed, so
+the measurements do not establish a consistent wired benefit or
+regression. Cached Release simulated 65,536 wired events in a median
+262–281 ms per virtual second across the two passes.
+
+These are single-host results from five timed trials per workload per
+pass. The fixtures measure steady-state execution and exclude chip
+construction. They do not quantify the cache's allocation cost or the
+performance of the full six-digit clock. The Release result supports
+retention for direct CD4060 evaluation with the measured Debug tradeoff.
+Canonical production source remains at Phase 5B.4 pending review.
+
+
+## Phase 5B.5b.2 CD4060 definite-clock singleton experiment on 28 November 2026
+
+Used the native arm64 WORK Mac with Xcode 27.2 (27B52). The isolated
+baseline is a byte-for-byte copy of the accepted Phase 5B.5b.1 cached
+candidate. CD4060 source SHA-256 is
+`684a396c1fb03739ac1bfcc13f7a995ce30210d9033be807fe97d19faa8ee0fb`.
+The benchmark fixture has SHA-256
+`95b13303d0cbead7ac29f6b8cea3ccda20472793033aa613adc0093f049c4f98`
+in both trees. Canonical HEAD is
+`06bb45b8657a7b113e19732f74874bf67b5507fb` with the local Phase 5B.4
+production snapshot.
+
+The isolated experiment adds a branch in `CD4060.evaluate()` gated on a
+single count, a current binary clock, an initialized binary prior clock
+and binary RESET. The prior clock is binary whenever a clock has been
+sampled and the second bucket is absent. RESET HIGH sets the count to
+zero asynchronously. RESET LOW advances only on HIGH to LOW, wrapping at
+14 bits. The branch writes through the existing singleton and previous
+clock fields and drives all ten cached pins using their cached masks.
+The general path still handles startup, X/Z clocks and RESET, and
+multi-count histories. It preserves correlated buckets, driver
+observations and same-symbol publications. Power failure still clears the
+count and clock history. The count range representation was unchanged.
+
+The experiment extends the existing parameterized `correlatedClock`
+test to traverse a second HIGH → X/Z → LOW bridge after seven definite
+pulses, crossing the count-16 boundary with the expected exact count.
+This exercises fast-path recovery and a second exit with accumulated
+history in both power modes and for both uncertain symbols.
+
+### Native arm64 Debug correctness
+
+| Run | Tests | Suites | Executions | Failures / skips |
+| --- | ---: | ---: | ---: | ---: |
+| Exact cached baseline, full regression | 289 | 51 | 553 | 0 / 0 |
+| Fast path, focused CD4060 suite | 10 | 1 | 32 | 0 / 0 |
+| Fast path, full regression | 289 | 51 | 553 | 0 / 0 |
+
+Both full runs match the accepted cached result in test and suite
+identities, including all 365 parameterized argument identities. The
+focused run matches all accepted focused identities. The full regressions
+exclude the separately timed benchmark suite, as in Phase 5B.5b.1.
+
+### Native arm64 matched benchmarks
+
+Both versions used the same Xcode fixture with testability enabled, Debug
+`-Onone` and Release whole-module `-O`. All workloads ran serially,
+with one warmup and five measured trials per workload, per version and
+order. Fixture construction and initial reset are outside the timer.
+Each isolated workload runs 262,144 cycles and two evaluations per
+cycle. The wired Explicit Power workload runs 65,536 clock events in
+one simulated second through the Workbench CD4060 → CD4027 timebase.
+Harness assertions passed in all runs. Times are monotonic wall
+milliseconds as median [minimum–maximum]. Negative changes are faster.
+
+#### First pass
+
+Cached ran first in Debug. Fast path ran first in Release.
+
+| Build | Workload | Cached baseline (ms) | Fast path (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 412.53 [407.91–422.51] | 419.69 [410.59–428.58] | +1.7% |
+| Debug | partial-reset | 601.45 [598.78–603.70] | 616.52 [616.31–621.35] | +2.5% |
+| Debug | partial-clock | 566.32 [560.15–570.64] | 578.31 [560.72–585.60] | +2.1% |
+| Debug | unknown | 398.49 [392.52–400.81] | 416.83 [411.82–420.12] | +4.6% |
+| Debug | wired | 1,767.23 [1,764.62–1,787.12] | 1,782.01 [1,767.73–1,808.83] | +0.8% |
+| Release | definite | 36.29 [36.10–36.52] | 32.07 [31.67–32.89] | -11.6% |
+| Release | partial-reset | 49.34 [48.70–62.85] | 51.07 [50.47–60.92] | +3.5% |
+| Release | partial-clock | 50.18 [49.28–50.56] | 51.33 [50.06–51.92] | +2.3% |
+| Release | unknown | 36.22 [35.86–36.57] | 38.66 [37.89–38.83] | +6.8% |
+| Release | wired | 267.49 [264.32–268.69] | 267.27 [264.84–270.79] | -0.1% |
+
+#### Reverse-order repeat
+
+Fast path ran first in Debug. Cached ran first in Release. Both runs
+reused the binaries from the first pass.
+
+| Build | Workload | Cached baseline (ms) | Fast path (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 419.31 [415.32–421.62] | 418.65 [416.18–421.32] | -0.2% |
+| Debug | partial-reset | 601.36 [592.86–625.30] | 615.47 [609.86–622.76] | +2.3% |
+| Debug | partial-clock | 562.75 [556.28–593.02] | 579.86 [576.28–587.53] | +3.0% |
+| Debug | unknown | 399.07 [397.76–404.80] | 401.42 [395.09–406.07] | +0.6% |
+| Debug | wired | 1,773.28 [1,716.89–1,795.31] | 1,766.70 [1,742.30–1,772.43] | -0.4% |
+| Release | definite | 36.70 [36.17–36.94] | 31.82 [31.55–31.93] | -13.3% |
+| Release | partial-reset | 49.60 [47.75–50.12] | 50.09 [49.67–55.22] | +1.0% |
+| Release | partial-clock | 50.25 [49.66–50.65] | 51.17 [51.00–51.38] | +1.8% |
+| Release | unknown | 37.37 [36.79–37.66] | 38.70 [38.30–39.20] | +3.6% |
+| Release | wired | 267.90 [255.17–269.45] | 260.40 [258.51–265.17] | -2.8% |
+
+### Retention decision and limits
+
+Discard the singleton branch and restore the isolated Phase 5B.5b.1
+cached candidate. The Release definite-clock median fell by 11.6% and
+13.3%, with disjoint trial ranges in both passes. That saved 4.2–4.9 ms
+over 524,288 evaluations. Debug definite-clock medians changed by +1.7%
+and −0.2%, with overlapping ranges. Release partial RESET, partial clock
+and unknown count were slower in both orders. Unknown-count medians rose
+by 6.8% and 3.6%, with disjoint ranges in both passes. Wired ranges
+overlapped in all four comparisons. The wired median moved by +0.8% then
+−0.4% in Debug and −0.1% then −2.8% in Release. The isolated Release
+gain does not justify the extra branch and duplicated output loop given
+the regressions outside definite-clock operation and the absence of a
+clear wired gain.
+
+The experiment changes and temporary test extension were removed from
+the isolated source tree, which matched the accepted cached candidate
+byte for byte after restoration. The experimental diff and native
+result bundles remain in the phase workspace for inspection. Canonical
+production source was verified byte for byte against Phase 5B.4.
+Only this status entry was added to the canonical checkout.
+
+These measurements cover one host, five timed trials per comparison and
+steady-state fixtures. The timed direct-pin runs do not measure
+same-symbol X/Z publication, contention, startup or power cycling.
+Native correctness tests cover those paths. The benchmark excludes
+construction and does not measure memory usage or the full six-digit
+clock. Phase 5B.5b.2 ends here.
+
+
+## Phase 5B.5b.3 CD4060 inline contiguous count intervals on 28 November 2026
+
+Ran on the native arm64 WORK Mac with Xcode 27.2 (27B52). The
+isolated baseline matched the accepted Phase 5B.5b.1 tree byte for byte.
+Its CD4060 source SHA-256 was
+`684a396c1fb03739ac1bfcc13f7a995ce30210d9033be807fe97d19faa8ee0fb`.
+Both benchmark fixtures had SHA-256
+`95b13303d0cbead7ac29f6b8cea3ccda20472793033aa613adc0093f049c4f98`.
+
+Each correlated clock bucket can hold a scalar, an inline inclusive
+interval, the full-domain sentinel, or sorted nonadjacent ranges backed
+by an array. Contiguous advancement and union work directly on endpoints.
+Advancing past 16,383 inserts zero and retains the shifted upper
+fragment. The fallback merges sorted input ranges and defers allocating
+an output buffer until it encounters a gap. Bit consensus uses the exact
+ranges. Clock sampling, provenance, reset priority, and power
+invalidation use the cached implementation's existing paths.
+
+### Native arm64 Debug correctness
+
+| Run | Tests | Suites | Executions | Failures / skips |
+| --- | ---: | ---: | ---: | ---: |
+| Accepted cached baseline, full regression | 289 | 51 | 553 | 0 / 0 |
+| Inline interval, focused CD4060 suite | 12 | 1 | 37 | 0 / 0 |
+| Inline interval, full regression | 291 | 51 | 558 | 0 / 0 |
+
+The baseline reproduced every accepted test and suite identity and all
+365 parameterized argument identities. The full candidate run preserved
+them all and added two tests with five executions. The focused additions
+compare unions, advancement, optional reset, canonical representations
+and all 14 output bits against enumerated integer sets. The wired clock
+test compares both clock buckets with an independent set model near
+rollover in both power modes, including X/Z symbol changes, same-symbol
+publication, control-only updates and reset. Existing tests cover the
+power-loss lifecycle, contention and wired timebase.
+
+### Native arm64 matched benchmarks
+
+Used the unchanged five-workload fixture and the same testability,
+Debug `-Onone` and Release whole-module `-O` settings for both
+versions. Each workload ran one warmup and five timed trials per
+version and order. The direct workloads use 524,288 evaluations.
+The wired workload services 65,536 clock events through the explicit
+power Workbench CD4060 → CD4027 timebase. Fixture construction and
+initial reset are outside the timer. Times are median [minimum–maximum]
+wall milliseconds. Negative changes are faster.
+
+#### First pass
+
+Cached ran first in Debug. Inline interval ran first in Release.
+
+| Build | Workload | Cached baseline (ms) | Inline interval (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 421.98 [420.93–428.65] | 419.83 [416.08–425.23] | -0.5% |
+| Debug | partial-reset | 610.04 [594.86–615.73] | 603.07 [598.85–606.78] | -1.1% |
+| Debug | partial-clock | 571.56 [558.53–573.52] | 437.29 [434.92–438.84] | -23.5% |
+| Debug | unknown | 400.28 [397.39–408.50] | 401.73 [396.32–406.23] | +0.4% |
+| Debug | wired | 1,804.75 [1,784.20–1,827.16] | 1,740.65 [1,730.57–1,792.82] | -3.6% |
+| Release | definite | 36.61 [36.47–36.91] | 36.84 [36.37–37.04] | +0.6% |
+| Release | partial-reset | 48.01 [47.82–50.82] | 50.76 [49.63–63.13] | +5.7% |
+| Release | partial-clock | 49.54 [49.09–49.84] | 41.96 [41.35–42.80] | -15.3% |
+| Release | unknown | 36.63 [36.42–36.82] | 36.91 [36.73–37.15] | +0.8% |
+| Release | wired | 274.30 [272.52–276.14] | 265.26 [264.34–268.17] | -3.3% |
+
+#### Reverse-order repeat
+
+Inline interval ran first in Debug. Cached ran first in Release. Both
+runs reused the first-pass binaries.
+
+| Build | Workload | Cached baseline (ms) | Inline interval (ms) | Median change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 457.98 [444.76–459.93] | 422.16 [419.71–425.56] | -7.8% |
+| Debug | partial-reset | 642.14 [641.43–645.11] | 602.96 [595.77–624.34] | -6.1% |
+| Debug | partial-clock | 577.90 [574.23–593.19] | 441.54 [436.77–448.59] | -23.6% |
+| Debug | unknown | 424.91 [424.07–428.39] | 403.36 [401.86–406.46] | -5.1% |
+| Debug | wired | 1,781.73 [1,769.17–1,796.84] | 1,765.13 [1,757.07–1,796.89] | -0.9% |
+| Release | definite | 36.62 [36.05–36.76] | 36.61 [36.36–37.16] | -0.0% |
+| Release | partial-reset | 48.75 [48.36–54.00] | 51.48 [50.46–63.86] | +5.6% |
+| Release | partial-clock | 49.49 [49.42–50.07] | 41.74 [41.61–42.01] | -15.7% |
+| Release | unknown | 36.52 [36.21–36.76] | 36.99 [36.66–37.35] | +1.3% |
+| Release | wired | 260.28 [259.72–264.46] | 261.66 [258.68–262.03] | +0.5% |
+
+### Range buffers and representation cost
+
+An untimed replay of the direct-pin loops counted source-level requests
+for nonempty range buffers at array literals and initial reservations.
+The partial-clock workload went from 271,360 requests per trial to zero
+(265 per 256-cycle block across 1,024 blocks). Partial reset stayed at
+254,976 because its sets remain fragmented after the reset is released.
+Definite clock and full-domain unknown stayed at zero. Both the required
+bucket and its optional companion increased in stride from 16 to 24 bytes
+each on arm64, adding 16 bytes across those two stored fields. These
+counts describe range-buffer requests and field stride. Heap bytes,
+allocator calls, and overall process memory were outside the measurement.
+
+### Retention decision and limits
+
+Retain the inline interval optimization in the isolated Phase 5B.5
+candidate. Partial-clock medians improved by 23.5% and 23.6% in Debug
+(134–136 ms saved per trial) and 15.3% and 15.7% in Release (7.6–7.8 ms
+saved). The partial-clock trial ranges were disjoint in all four
+comparisons. The range-buffer reduction and repeatable advantage in
+both build modes justify the extra representation and merge logic.
+
+Release partial reset was 5.6–5.7% slower, costing about 2.7 ms per
+trial with overlapping ranges in both orders. The fragmented branch
+still constructs buffers and incurs extra merge bookkeeping. The
+Release unknown median rose 0.8–1.3%, with overlapping ranges. Release
+definite clock was within 0.7%. Debug workloads other than partial
+clock varied with the order, including a broad shift in the cached
+medians on the repeat. Wired Debug medians improved 3.6% then 0.9%
+with overlapping ranges. Wired Release moved from 3.3% faster to 0.5%
+slower. The wired timings do not establish a repeatable benefit.
+
+The timings cover steady-state fixtures on one host. Same-symbol X/Z
+publication, contention, power cycling and startup are covered by
+correctness tests. The full six-digit clock was outside the benchmark.
+The candidate, focused tests, diff and native result bundles are in the
+Phase 5B.5b.3 workspace. Canonical production files were verified byte
+for byte against Phase 5B.4. This entry is the only canonical change.
+Phase 5B.5b.3 ends here.
+
+
+## Phase 5B.5c CD4060 final correctness and integration on 28 November 2026
+
+Passed on the native arm64 WORK Mac with Xcode 27.2 (27B52) and
+macOS 27.2.1. The retained Phase 5B.5b.3 tree was copied and compared byte
+for byte. Its CD4060 SHA-256 is
+`cacf5bc008b2d8581b9825607db9eabc475715960a57c5d90244576c50bd0983`.
+The candidate uses cached pins and inline intervals. The discarded
+singleton fast path is absent. The expanded verification copy adds
+only `CD4060FinalVerificationTests.swift`. No correctness defects were
+demonstrated and no candidate production changes were needed.
+
+### Native arm64 Debug regression and Release application
+
+| Run | Tests | Suites | Executions | Failures / skips |
+| --- | ---: | ---: | ---: | ---: |
+| Exact retained 5B.5b.3 candidate | 291 | 51 | 558 | 0 / 0 |
+| Candidate with final verification tests | 293 | 52 | 562 | 0 / 0 |
+
+The exact run matched the retained run in every suite, test and all
+369 parameterized argument identities. The expanded run preserved all
+baseline identities and added one suite, two tests and four executions.
+Both runs excluded the separately timed benchmark suite, following
+the retained baseline convention. The arm64 Release app built and
+its executable was verified as Mach-O arm64.
+
+### Exact counter-state verification
+
+An independent oracle enumerated individual (count, prior clock)
+states and verified both correlated buckets, consensus for all 14
+internal bits, and the ten physical outputs. In Explicit and Automatic
+Power it checked every rising and falling half-cycle of a complete
+16,384-count rollover. Directed traces exercised fragmented intervals
+across wrap, X and Z changes, same-symbol publications, control-only
+updates, repeated settling, strong contention, masked weak
+publications and weak-pull recovery, asynchronous RESET, startup and
+power loss and restoration. A fixed-seed 512-step trace per power mode
+combined all clock and RESET symbols. The retained test suite also
+rechecked interval union and advancement against exact sets, RESET
+weak pulls and contention, and startup/restoration at all four clock
+symbols.
+
+### Deterministic wired timebase
+
+A wired Workbench Clock Source fed CD4060 pin 11 at 32,768 Hz.
+CD4060 pin 3 fed CD4027 clock pin 3 and CD4027 Q fed CD4017 clock
+pin 14. An injected time source and Workbench oscilloscope confirmed
+every one of 163,840 input half-cycle edges per power mode over
+2.5 simulated seconds, with timestamps equal to integer multiples
+of 1/65,536 second. CD4060 Q14 changed at 0.25-second intervals
+from 0.25 s through 2.50 s. CD4027 Q changed at 0.25, 0.75, 1.25,
+1.75 and 2.25 s. CD4017 decoded counts 0 through 3, advancing on
+the CD4027 rising edges at 0.25, 1.25 and 2.25 s. Both power modes
+matched the same expected trace.
+
+### Evidence and limits
+
+The wired check measures ideal simulated time with an injected source
+and a single downstream decade. Wall-clock scheduling accuracy,
+physical oscillator behavior, and a full six-digit clock using this
+candidate chain were outside the focused verification. The oracle
+checks the directed and fixed-seed histories and the full definite
+count domain. Possible uncertain histories are unbounded.
+The first restricted Debug attempt could not start Xcode's Swift
+macro plug-in service. The native rerun succeeded. The build's App
+Intents metadata warning and test host's auto-shortcut service
+messages had no test or build failures associated with them.
+
+The candidate, test-only verification copy, commands, logs, native
+Xcode result bundles and identity comparisons are retained in
+`referenced-chatgpt-conversation-this-is-an-18/work` in the
+28 November Codex workspace. The canonical checkout's 116 other
+tracked and unignored files were verified byte for byte against
+Phase 5B.4. The Phase 5B.5c status entry is the only canonical
+change. Phase 5B.5c ends here.
+
+
+## Phase 5B.5d CD4060 comparison and adoption gate on 28 November 2026
+
+### Provenance and native Debug regression
+
+Compared the exact canonical Phase 5B.4 implementation with the exact
+Phase 5B.5c verification tree on the arm64 WORK Mac, macOS 27.2.1,
+Xcode 27.2 (27B52). The canonical checkout was checked against the
+Phase 5B.4 snapshot, including existing local changes. The candidate
+has correlated clock histories, cached output pins and masks, and
+inline contiguous intervals. Its verified production source excludes
+the discarded singleton fast path.
+
+- Phase 5B.4 CD4060 SHA-256:
+  `0c62f09049a61105414d219783ad9ee3bf6346c9b47ca2db8bf9f122cfe03e04`
+- Phase 5B.5c CD4060 SHA-256:
+  `cacf5bc008b2d8581b9825607db9eabc475715960a57c5d90244576c50bd0983`
+
+| Isolated tree | Tests | Suites | Executions | Failures / skips |
+| --- | ---: | ---: | ---: | ---: |
+| Canonical Phase 5B.4 | 285 | 51 | 535 | 0 / 0 |
+| Exact Phase 5B.5c candidate | 293 | 52 | 562 | 0 / 0 |
+
+Both runs matched their historical test, suite and parameterized
+argument identities exactly. The candidate preserved all canonical
+identities. The timing harness was excluded from regression counts.
+
+### Benchmark method
+
+Used one byte-identical benchmark in both isolated trees, with Debug
+and Release testability enabled and native arm64 execution. The
+original five-workload fixture was reused with an exact serviced-time
+assertion outside the timed region. Each workload ran one warmup
+followed by five measured trials per binary in each pass. Builds were
+reused on the reverse pass, with runs serialized. First-pass Debug was
+canonical then candidate, and Release was candidate then canonical.
+Both orders were reversed for the repeat. Changes compare median
+candidate wall time with canonical wall time. Negative is faster.
+
+The four isolated workloads each ran 262,144 cycles with direct CD4060
+pin drives and checked the final Q14. The wired workload used the
+explicit-power Workbench path, driving CD4060 into CD4027 from a
+32,768 Hz Clock Source. It checked stable, advancing service to exactly
+1 simulated second (65,536 half-cycle events) and both final outputs.
+Both Debug regressions also checked output transitions immediately
+before and at the same expected simulated times through 2.25 s. The
+candidate additionally passed the Phase 5B.5c edge-by-edge timebase
+verification in both power modes.
+### First order
+
+| Build | Workload | Phase 5B.4 median [range], ms | Phase 5B.5c median [range], ms | Change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 418.70 [414.77–419.84] | 422.68 [407.58–426.37] | +0.9% |
+| Debug | partial-reset | 593.21 [589.51–598.70] | 586.82 [583.97–588.40] | -1.1% |
+| Debug | partial-clock | 418.24 [415.02–420.24] | 439.18 [428.70–441.66] | +5.0% |
+| Debug | unknown | 387.73 [381.74–396.28] | 398.90 [395.96–400.51] | +2.9% |
+| Debug | wired | 1,746.77 [1,734.88–1,784.89] | 1,749.93 [1,724.38–1,756.64] | +0.2% |
+| Release | definite | 69.42 [68.51–70.15] | 36.28 [35.92–36.36] | -47.7% |
+| Release | partial-reset | 82.19 [81.82–82.57] | 50.20 [49.25–65.48] | -38.9% |
+| Release | partial-clock | 76.47 [75.58–77.13] | 41.47 [40.95–41.76] | -45.8% |
+| Release | unknown | 72.01 [71.80–72.17] | 37.30 [36.28–37.63] | -48.2% |
+| Release | wired | 267.63 [265.63–268.57] | 263.96 [261.83–264.62] | -1.4% |
+
+### Reverse order
+
+| Build | Workload | Phase 5B.4 median [range], ms | Phase 5B.5c median [range], ms | Change |
+| --- | --- | ---: | ---: | ---: |
+| Debug | definite | 412.59 [409.94–417.55] | 416.79 [411.42–420.47] | +1.0% |
+| Debug | partial-reset | 597.07 [592.94–600.61] | 592.27 [588.77–600.61] | -0.8% |
+| Debug | partial-clock | 413.79 [411.73–415.35] | 438.99 [432.85–440.07] | +6.1% |
+| Debug | unknown | 394.64 [390.71–413.90] | 399.60 [396.98–416.05] | +1.3% |
+| Debug | wired | 1,770.77 [1,756.91–1,789.34] | 1,769.35 [1,740.20–1,783.50] | -0.1% |
+| Release | definite | 70.96 [70.40–79.86] | 36.18 [35.77–36.47] | -49.0% |
+| Release | partial-reset | 81.84 [81.61–82.79] | 50.72 [49.87–65.93] | -38.0% |
+| Release | partial-clock | 73.30 [73.08–73.79] | 41.42 [41.17–42.03] | -43.5% |
+| Release | unknown | 69.10 [68.74–70.52] | 36.50 [36.43–36.68] | -47.2% |
+| Release | wired | 264.71 [262.65–264.84] | 264.28 [262.09–266.57] | -0.2% |
+
+### Decision, tradeoffs and limits
+
+Adopt the exact verified candidate. The four isolated Release cases
+improved in both orders with disjoint trial ranges. Definite improved
+47.7–49.0%, partial RESET 38.0–38.9%, partial clock 43.5–45.8%, and
+full unknown 47.2–48.2%. The fragmented partial-RESET candidate had
+an upper-tail trial near 66 ms in each order, still below the fastest
+canonical trial. Wired Release improved 1.4% then 0.2% (3.67 ms and
+0.43 ms), and the repeat's ranges overlapped. Wired Debug changed
++0.2% then −0.1%, with overlapping ranges. These are small wired
+differences, with no material repeatable regression or established
+practical wired speedup.
+
+Debug partial clock was repeatably 5.0–6.1% slower (21–25 ms per
+262,144 cycles), with disjoint ranges in both orders. Debug definite
+rose 0.9–1.0%, full unknown rose 1.3–2.9%, and partial RESET fell
+0.8–1.1%. Accept the isolated Debug costs given the verified
+four-state behavior, large Release improvements and stable wired
+results. The earlier inline-interval comparison measured 16 extra bytes
+across two stored bucket fields and fewer requests for nonempty
+range buffers on its partial-clock fixture. Whole-process memory and
+allocation counts were outside this comparison.
+
+These are short, fixed fixtures on one host. The wired run measures
+Workbench service of ideal simulated time for one divider and one
+flip-flop. Physical oscillator timing, UI scheduling at real-time
+rates and full six-digit clock performance remain unverified.
+
+### Canonical adoption and git status
+
+Copied the verified `SimulationCore/Components/CD4060.swift`,
+`CMOS4000SimulatorTests/CD4060PowerTests.swift` and
+`CMOS4000SimulatorTests/CD4060FinalVerificationTests.swift` byte for
+byte. Verified the remaining canonical source and project files
+against the pre-adoption snapshot. The benchmark harness stayed in
+the isolated trees. The full native arm64 Debug suite passed all 293
+test identities, 52 suites and 562 executions with zero failures or
+skips, matching the verified candidate including parameterized
+arguments. The standard Release app built with the project's normal
+Release settings and an arm64 destination. Its executable is Mach-O
+arm64.
+
+Git remains on `main...origin/main` at
+`06bb45b8657a7b113e19732f74874bf67b5507fb`, with local changes and
+nothing staged. Relative to the starting worktree, the source and
+power test are modified and the final verification test is untracked.
+This entry extends the already modified `PROJECT_STATUS.md`.
+The ten previously modified paths and two previously untracked paths
+remain present. `git diff --check` passed.
+
+Native result bundles, raw benchmark trials, identity lists, build
+logs and source checks are in the 28 November Codex workspace under
+`referenced-chatgpt-conversation-this-is-an-19/work`.
+Phase 5B.5d ends here.

@@ -4,7 +4,11 @@ final class CD4027: LogicComponent {
         case set
         case bothHigh
 
-        static let unknown: Set<Self> = [.reset, .set]
+        static let unknown: [Self] = [.reset, .set]
+
+        init(high: Bool) {
+            self = high ? .set : .reset
+        }
     }
 
     private struct Unit {
@@ -15,13 +19,18 @@ final class CD4027: LogicComponent {
         let k: Pin
         let j: Pin
         let set: Pin
-        let edgeDetector = ClockEdgeDetector()
-        var candidates = OutputPair.unknown
+        var history = CorrelatedClockHistory(initialStates: OutputPair.unknown)
+        private var lastClock: LogicState?
+        private var lastDriveObservations: [ObjectIdentifier: ClockDriveObservation] = [:]
+        private var ordinal: UInt64 = 0
+        private var lastSet: LogicState?
+        private var lastReset: LogicState?
 
         init(_ numbers: [Int]) {
             q = Pin(number: numbers[0], name: "Q", direction: .output)
             complement = Pin(number: numbers[1], name: "Q̅", direction: .output)
             clock = Pin(number: numbers[2], name: "CLK", direction: .input)
+            clock.tracksClockProvenance = true
             reset = Pin(number: numbers[3], name: "RESET", direction: .input)
             k = Pin(number: numbers[4], name: "K", direction: .input)
             j = Pin(number: numbers[5], name: "J", direction: .input)
@@ -30,45 +39,114 @@ final class CD4027: LogicComponent {
 
         var pins: [Pin] { [q, complement, clock, reset, k, j, set] }
 
-        mutating func evaluate() {
-            let rising = edgeDetector.update(clock.state) == .rising
-            var next: Set<OutputPair> = []
-            for setHigh in PresettableCounterState.possibilities(set.state) {
-                for resetHigh in PresettableCounterState.possibilities(reset.state) {
-                    switch (setHigh, resetHigh) {
-                    case (true, true): next.insert(.bothHigh)
-                    case (true, false): next.insert(.set)
-                    case (false, true): next.insert(.reset)
-                    case (false, false): next.formUnion(unforcedCandidates(rising: rising))
-                    }
-                }
-            }
+        mutating func powerDidFail() {
+            history.invalidateClock(resetTo: OutputPair.unknown)
+            lastClock = nil
+            lastDriveObservations = [:]
+            lastSet = nil
+            lastReset = nil
+        }
 
-            candidates = next
-            let bothHigh = next.contains(.bothHigh)
+        mutating func evaluate() {
+            let setLevel = set.state
+            let resetLevel = reset.state
+            let controlsChanged = lastSet != setLevel || lastReset != resetLevel
+            let clockChanged = lastClock != clock.state || lastDriveObservations != clock.clockDriveObservations
+            if clockChanged {
+                ordinal += 1
+                let sample = ResolvedClockSample(id: ClockSampleID(ordinal: ordinal), level: clock.state)
+                update(set: setLevel, reset: resetLevel, sample: sample)
+                lastClock = clock.state
+                lastDriveObservations = clock.clockDriveObservations
+            } else if controlsChanged {
+                update(set: setLevel, reset: resetLevel, sample: nil)
+            }
+            lastSet = setLevel
+            lastReset = resetLevel
+
+            if let pair = history.unanimousState {
+                q.drive(pair == .reset ? .low : .high)
+                complement.drive(pair == .set ? .low : .high)
+                return
+            }
+            let pairs = history.possibleStates
+            let bothHigh = pairs.contains(.bothHigh)
             q.drive(PresettableCounterState.consensus(
-                low: next.contains(.reset), high: next.contains(.set) || bothHigh
+                low: pairs.contains(.reset), high: pairs.contains(.set) || bothHigh
             ))
             complement.drive(PresettableCounterState.consensus(
-                low: next.contains(.set), high: next.contains(.reset) || bothHigh
+                low: pairs.contains(.set), high: pairs.contains(.reset) || bothHigh
             ))
         }
 
-        private func unforcedCandidates(rising: Bool) -> Set<OutputPair> {
-            // Releasing both controls can land in either normal state. Leave
-            // clock ordering during this release unresolved, even on a rising sample.
-            if candidates.contains(.bothHigh) { return OutputPair.unknown }
-            guard rising else { return candidates }
-
-            var next: Set<OutputPair> = []
-            for prior in candidates {
-                // With Q LOW only J matters. With Q HIGH only K matters.
-                let activeInput = prior == .reset ? j.state : k.state.inverted
-                for high in PresettableCounterState.possibilities(activeInput) {
-                    next.insert(high ? .set : .reset)
-                }
+        private mutating func update(set: LogicState, reset: LogicState, sample: ResolvedClockSample?) {
+            let jLevel = j.state
+            let kLevel = k.state.inverted
+            let forced: OutputPair?
+            switch (set, reset) {
+            case (.high, .high): forced = .bothHigh
+            case (.high, .low): forced = .set
+            case (.low, .high): forced = .reset
+            default: forced = nil
             }
-            return next
+
+            // A possible simultaneous release allows either normal state.
+            // Preserve the existing policy even when release coincides with a rise.
+            let unforced = set != .high && reset != .high
+            let releasing = unforced && (history.unanimousState.map { $0 == .bothHigh }
+                ?? history.possibleStates.contains(.bothHigh))
+            let normal = set == .low && reset == .low
+            let definiteData = (jLevel == .low || jLevel == .high) && (kLevel == .low || kLevel == .high)
+
+            if let sample {
+                if let forced {
+                    history.consume(sample) { _, _ in CollectionOfOne(forced) }
+                    return
+                }
+                if normal && !releasing && definiteData {
+                    history.consume(sample) { prior, event in
+                        let input = prior == .reset ? jLevel : kLevel
+                        return CollectionOfOne(event == .rising ? OutputPair(high: input == .high) : prior)
+                    }
+                    return
+                }
+            } else if let forced {
+                history.updateStates { _ in CollectionOfOne(forced) }
+                return
+            } else if normal && !releasing {
+                return
+            }
+
+            let setOptions = PresettableCounterState.possibilities(set)
+            let resetOptions = PresettableCounterState.possibilities(reset)
+            func successors(_ prior: OutputPair, _ event: ClockSampleTransition) -> [OutputPair] {
+                var next: [OutputPair] = []
+                for setHigh in setOptions {
+                    for resetHigh in resetOptions {
+                        switch (setHigh, resetHigh) {
+                        case (true, true): next.append(.bothHigh)
+                        case (true, false): next.append(.set)
+                        case (false, true): next.append(.reset)
+                        case (false, false):
+                            if releasing {
+                                next.append(contentsOf: OutputPair.unknown)
+                            } else if event == .rising {
+                                let input = prior == .reset ? jLevel : kLevel
+                                next.append(contentsOf: PresettableCounterState.possibilities(input).map(OutputPair.init(high:)))
+                            } else {
+                                next.append(prior)
+                            }
+                        }
+                    }
+                }
+                return next
+            }
+
+            if let sample {
+                history.consume(sample, applying: successors)
+            } else {
+                history.updateStates { successors($0, .hold) }
+            }
         }
     }
 
@@ -85,8 +163,7 @@ final class CD4027: LogicComponent {
 
     func powerDidFail() {
         for index in units.indices {
-            units[index].candidates = OutputPair.unknown
-            units[index].edgeDetector.reset()
+            units[index].powerDidFail()
         }
     }
 
